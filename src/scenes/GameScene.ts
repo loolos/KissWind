@@ -71,6 +71,7 @@ export class GameScene extends Phaser.Scene {
 
     // Initialize systems
     this.wind = new Wind()
+    this.wind.spawnInitialZones(w, h)
     this.world = new World(this)
     this.boat = new Boat(this)
 
@@ -210,7 +211,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Update wind
-    this.wind.update(dt, this.physState.posX, this.physState.posY)
+    this.wind.update(dt, this.physState.posX, this.physState.posY, this.scale.width, this.scale.height)
 
     // Get effective wind strength at boat position
     const effectiveStrength = this.wind.getStrengthAt(this.physState.posX, this.physState.posY)

@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { worldToScreen } from './camera'
-import { MAP_ZOOM } from './mapConfig'
+import { MAP_ZOOM, viewportHalfExtents } from './mapConfig'
 import { WindZone } from './Wind'
 
 /** Swell travel direction in world radians (+X = east). Not tied to wind. */
@@ -59,14 +59,7 @@ export class World {
 
   /** Visible world half-extents around boat (for spawning / wrapping), in world units */
   private viewportHalfExtents(): { halfW: number; halfH: number } {
-    const w = this.scene.scale.width
-    const h = this.scene.scale.height
-    const z = this.mapZoom
-    const pad = 80 / z
-    return {
-      halfW: w / (2 * z) + pad,
-      halfH: h / (2 * z) + pad,
-    }
+    return viewportHalfExtents(this.scene.scale.width, this.scene.scale.height, this.mapZoom)
   }
 
   private initDebris(boatX: number, boatY: number): void {
