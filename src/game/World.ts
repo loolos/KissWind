@@ -3,6 +3,12 @@ import { worldToScreen } from './camera'
 import { MAP_ZOOM } from './mapConfig'
 import { WindZone } from './Wind'
 
+/** Swell travel direction in world radians (+X = east). Not tied to wind. */
+const WAVE_SWELL_DIR = Math.PI * 0.22
+
+/** World-space drift speed scale (units/s), multiplied by each line’s random speed. */
+const WAVE_DRIFT_SPEED = 1.1
+
 interface Debris {
   worldX: number
   worldY: number
@@ -118,18 +124,18 @@ export class World {
     boatX: number,
     boatY: number,
     windDir: number,
-    windStrength: number,
+    _windStrength: number,
     zones: WindZone[]
   ): void {
     const { halfW, halfH } = this.viewportHalfExtents()
 
-    // Wind drift in world space (waves are map features, not screen-decoupled)
-    const waveSpeed = windStrength * 25 * dt
-    this.waveOffset += waveSpeed
+    // Fixed-direction swell (slow); shimmer time independent of wind
+    this.waveOffset += dt * 1.2
 
     for (const wl of this.waveLines) {
-      wl.worldX += Math.cos(windDir) * wl.speed * waveSpeed * 0.5
-      wl.worldY += Math.sin(windDir) * wl.speed * waveSpeed * 0.5
+      const step = WAVE_DRIFT_SPEED * wl.speed * dt
+      wl.worldX += Math.cos(WAVE_SWELL_DIR) * step
+      wl.worldY += Math.sin(WAVE_SWELL_DIR) * step
       this.wrapWorldPoint(wl, boatX, boatY, halfW, halfH)
     }
 
@@ -165,8 +171,8 @@ export class World {
     }
 
     for (const wl of this.waveLines) {
-      const perpX = Math.cos(windDir + Math.PI / 2)
-      const perpY = Math.sin(windDir + Math.PI / 2)
+      const perpX = Math.cos(WAVE_SWELL_DIR + Math.PI / 2)
+      const perpY = Math.sin(WAVE_SWELL_DIR + Math.PI / 2)
       const half = wl.length / 2
       const c = worldToScreen(wl.worldX, wl.worldY, boatX, boatY, z, w, h)
       const shimmer =
