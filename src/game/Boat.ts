@@ -132,9 +132,11 @@ export class Boat {
     g.lineTo(cx + hl2.x, cy + hl2.y)
     g.strokePath()
 
-    // Mast (thin vertical line from hull center)
-    const mastBase = this.rotatePoint(5, 0, this.heading)
-    const mastTop = this.rotatePoint(5, -50, this.heading)
+    // Mast (from deck; taller for a larger sail)
+    const mastX = 5
+    const mastBase = this.rotatePoint(mastX, 0, this.heading)
+    const mastHeight = 58
+    const mastTop = this.rotatePoint(mastX, -mastHeight, this.heading)
     g.lineStyle(2.5, 0x5c3d11, 1)
     g.beginPath()
     g.moveTo(cx + mastBase.x, cy + mastBase.y)
@@ -159,40 +161,99 @@ export class Boat {
         break
     }
 
-    // Sail: triangle from mast base to mast top to sail tip
-    // sailAngle is world-space, we draw relative to mast position
-    const sailLength = 40
-    const sailTip = this.rotatePoint(5 + Math.cos(this.sailAngle) * sailLength, -25 + Math.sin(this.sailAngle) * sailLength, 0)
-    // Mast base at heading-rotated position
-    const mb = { x: cx + mastBase.x, y: cy + mastBase.y }
+    // Boom spans beam of hull; clew (sail corner) follows world-space sailAngle from mast top
+    const beamUx = Math.cos(this.heading + Math.PI / 2)
+    const beamUy = Math.sin(this.heading + Math.PI / 2)
+    const clewDist = 56
     const mt = { x: cx + mastTop.x, y: cy + mastTop.y }
-    const st = { x: cx + sailTip.x, y: cy + sailTip.y }
+    const clew = {
+      x: mt.x + Math.cos(this.sailAngle) * clewDist,
+      y: mt.y + Math.sin(this.sailAngle) * clewDist,
+    }
 
-    // Sail shadow
+    // Side toward clew = "pulled" side (larger panel); other side shorter along boom
+    const toClewX = clew.x - mt.x
+    const toClewY = clew.y - mt.y
+    const pullStarboard = toClewX * beamUx + toClewY * beamUy > 0
+    const mb = { x: cx + mastBase.x, y: cy + mastBase.y }
+    const fullHalf = hullWidth * 0.52
+    const smallHalf = fullHalf * 0.36
+    let portDist: number
+    let starDist: number
+    if (pullStarboard) {
+      portDist = smallHalf
+      starDist = fullHalf
+    } else {
+      portDist = fullHalf
+      starDist = smallHalf
+    }
+    const footPort = {
+      x: mb.x - beamUx * portDist,
+      y: mb.y - beamUy * portDist,
+    }
+    const footStar = {
+      x: mb.x + beamUx * starDist,
+      y: mb.y + beamUy * starDist,
+    }
+
+    const drawSailTri = (
+      ax: number,
+      ay: number,
+      bx: number,
+      by: number,
+      cx: number,
+      cy: number,
+      fill: number,
+      alpha: number,
+      ox: number,
+      oy: number
+    ): void => {
+      g.fillStyle(fill, alpha)
+      g.beginPath()
+      g.moveTo(ax + ox, ay + oy)
+      g.lineTo(bx + ox, by + oy)
+      g.lineTo(cx + ox, cy + oy)
+      g.closePath()
+      g.fillPath()
+      g.lineStyle(1.5, 0x000000, 0.4)
+      g.beginPath()
+      g.moveTo(ax, ay)
+      g.lineTo(bx, by)
+      g.lineTo(cx, cy)
+      g.closePath()
+      g.strokePath()
+    }
+
+    // Shadow (both panels)
     g.fillStyle(0x000000, 0.15)
-    g.beginPath()
-    g.moveTo(mb.x + 2, mb.y + 2)
-    g.lineTo(mt.x + 2, mt.y + 2)
-    g.lineTo(st.x + 2, st.y + 2)
-    g.closePath()
-    g.fillPath()
+    for (const [fx, fy, tx, ty] of [
+      [footPort.x, footPort.y, mt.x, mt.y],
+      [footStar.x, footStar.y, mt.x, mt.y],
+    ] as const) {
+      g.beginPath()
+      g.moveTo(fx + 2, fy + 2)
+      g.lineTo(tx + 2, ty + 2)
+      g.lineTo(clew.x + 2, clew.y + 2)
+      g.closePath()
+      g.fillPath()
+    }
 
-    // Sail fill
-    g.fillStyle(sailColor, sailAlpha)
-    g.beginPath()
-    g.moveTo(mb.x, mb.y)
-    g.lineTo(mt.x, mt.y)
-    g.lineTo(st.x, st.y)
-    g.closePath()
-    g.fillPath()
+    // Fill: smaller panel slightly dimmer so asymmetry reads clearly
+    const smallPanel = pullStarboard
+      ? [footPort.x, footPort.y, mt.x, mt.y, clew.x, clew.y] as const
+      : [footStar.x, footStar.y, mt.x, mt.y, clew.x, clew.y] as const
+    const bigPanel = pullStarboard
+      ? [footStar.x, footStar.y, mt.x, mt.y, clew.x, clew.y] as const
+      : [footPort.x, footPort.y, mt.x, mt.y, clew.x, clew.y] as const
 
-    // Sail outline
-    g.lineStyle(1.5, 0x000000, 0.4)
+    drawSailTri(smallPanel[0], smallPanel[1], smallPanel[2], smallPanel[3], smallPanel[4], smallPanel[5], sailColor, sailAlpha * 0.82, 0, 0)
+    drawSailTri(bigPanel[0], bigPanel[1], bigPanel[2], bigPanel[3], bigPanel[4], bigPanel[5], sailColor, sailAlpha, 0, 0)
+
+    // Boom line along foot
+    g.lineStyle(2, 0x4a3010, 0.85)
     g.beginPath()
-    g.moveTo(mb.x, mb.y)
-    g.lineTo(mt.x, mt.y)
-    g.lineTo(st.x, st.y)
-    g.closePath()
+    g.moveTo(footPort.x, footPort.y)
+    g.lineTo(footStar.x, footStar.y)
     g.strokePath()
 
     // Speed indicator dots at bow

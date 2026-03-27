@@ -1,4 +1,8 @@
+import { MAP_ZOOM } from './mapConfig'
 import { normalizeAngle } from './Physics'
+
+/** World-space distances are divided by MAP_ZOOM so screen appearance matches pre-zoom behavior. */
+const Z = MAP_ZOOM
 
 export interface WindZone {
   worldX: number
@@ -49,12 +53,12 @@ export class Wind {
 
   spawnZone(centerX = 0, centerY = 0): void {
     const angle = Math.random() * Math.PI * 2
-    const dist = 300 + Math.random() * 600
+    const dist = (300 + Math.random() * 600) / Z
     const type = Math.random() < 0.6 ? 'gust' : 'dead'
     this.zones.push({
       worldX: centerX + Math.cos(angle) * dist,
       worldY: centerY + Math.sin(angle) * dist,
-      radius: 80 + Math.random() * 120,
+      radius: (80 + Math.random() * 120) / Z,
       type,
       multiplier: type === 'gust' ? 1.5 : 0.3,
     })
@@ -87,7 +91,7 @@ export class Wind {
       this.zones = this.zones.filter(z => {
         const dx = z.worldX - boatWorldX
         const dy = z.worldY - boatWorldY
-        return Math.sqrt(dx * dx + dy * dy) < 1200
+        return Math.sqrt(dx * dx + dy * dy) < 1200 / Z
       })
       // Keep 2-5 zones
       if (this.zones.length < 5) {
