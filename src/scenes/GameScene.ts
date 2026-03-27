@@ -8,9 +8,12 @@ import {
   computeThrust,
   updatePhysics,
   normalizeAngle,
+  OPTIMAL_ANGLE,
+  GREEN_ZONE_HALF_WIDTH,
+  YELLOW_ZONE_OUTER_HALF_WIDTH,
 } from '../game/Physics'
 
-const GAME_DURATION = 60  // seconds
+const GAME_DURATION = 180  // seconds
 
 export class GameScene extends Phaser.Scene {
   // Core systems
@@ -43,9 +46,14 @@ export class GameScene extends Phaser.Scene {
   private gameOverContainer!: Phaser.GameObjects.Container
   private currentWindStrength: number = 1.0
   private currentAcceleration: number = 0
+  private currentSpeed: number = 0
+  private currentHeading: number = 0
 
   // Scoring: accumulated distance in game-units (convert to "meters" for display)
   private METERS_PER_UNIT = 2
+
+  /** HUD speed bar full scale only (not a physics cap). */
+  private readonly HUD_SPEED_BAR_REF = 20
 
   constructor() {
     super({ key: 'GameScene' })
@@ -67,13 +75,17 @@ export class GameScene extends Phaser.Scene {
     this.boat = new Boat(this)
 
     this.physState = {
-      speed: 0,
-      heading: this.wind.direction,  // start facing into wind
       posX: 0,
       posY: 0,
+      velX: 0,
+      velY: 0,
+      accX: 0,
+      accY: 0,
     }
+    this.currentSpeed = 0
+    this.currentHeading = this.wind.direction
 
-    this.lastThrust = { thrust: 0, quality: 'yellow', multiplier: 1.0 }
+    this.lastThrust = { thrustX: 0, thrustY: 0, thrustMag: 0, quality: 'yellow', multiplier: 1.0 }
 
     // Initial sail angle: slightly off the wind for a good start
     this.boat.sailAngle = this.wind.direction + Math.PI * 0.6
@@ -95,7 +107,7 @@ export class GameScene extends Phaser.Scene {
     const fontSize = Math.max(14, Math.min(24, w * 0.04))
 
     // Timer (top-left)
-    this.timerText = this.add.text(16, 16, 'TIME: 60', {
+    this.timerText = this.add.text(16, 16, `TIME: ${GAME_DURATION}`, {
       fontSize: fontSize + 'px',
       fontFamily: 'Georgia, serif',
       color: '#ffffff',
@@ -208,20 +220,23 @@ export class GameScene extends Phaser.Scene {
     this.lastThrust = computeThrust(
       this.boat.sailAngle,
       this.wind.direction,
-      this.physState.heading,
       effectiveStrength
     )
 
     // Update physics
     const prevPos = { x: this.physState.posX, y: this.physState.posY }
-    const prevSpeed = this.physState.speed
+    const prevSpeed = Math.sqrt(this.physState.velX * this.physState.velX + this.physState.velY * this.physState.velY)
     this.physState = updatePhysics(
       this.physState,
-      this.lastThrust.thrust,
-      this.wind.direction,
+      this.lastThrust.thrustX,
+      this.lastThrust.thrustY,
       dt
     )
-    this.currentAcceleration = dt > 0 ? (this.physState.speed - prevSpeed) / dt : 0
+    this.currentSpeed = Math.sqrt(this.physState.velX * this.physState.velX + this.physState.velY * this.physState.velY)
+    if (this.currentSpeed > 1e-6) {
+      this.currentHeading = Math.atan2(this.physState.velY, this.physState.velX)
+    }
+    this.currentAcceleration = dt > 0 ? (this.currentSpeed - prevSpeed) / dt : 0
 
     // Accumulate distance
     const dx = this.physState.posX - prevPos.x
@@ -229,7 +244,7 @@ export class GameScene extends Phaser.Scene {
     this.totalDistance += Math.sqrt(dx * dx + dy * dy)
 
     // Update boat visual
-    this.boat.update(dt, this.physState.heading, this.physState.speed, this.lastThrust.quality)
+    this.boat.update(dt, this.currentHeading, this.currentSpeed, this.lastThrust.quality)
 
     // World map: all entities use world coords; boat-centered projection in World
     this.world.update(dt, this.physState.posX, this.physState.posY, this.wind.direction, effectiveStrength, this.wind.zones)
@@ -253,7 +268,7 @@ export class GameScene extends Phaser.Scene {
     this.scoreText.setText(`${meters}m`)
 
     // Speed
-    this.speedText.setText(`SPD: ${this.physState.speed.toFixed(1)}`)
+    this.speedText.setText(`SPD: ${this.currentSpeed.toFixed(1)}`)
 
     // Acceleration (specific value applied to boat speed each second)
     const accelColor =
@@ -273,7 +288,7 @@ export class GameScene extends Phaser.Scene {
     this.hudGraphics.fillRoundedRect(w - 120, 8, 112, 36, 8)
 
     // Wind direction compass (top-center)
-    this.drawWindCompass(w / 2, 44, this.wind.direction, this.physState.heading, this.currentWindStrength)
+    this.drawWindCompass(w / 2, 44, this.wind.direction, this.currentHeading, this.currentWindStrength)
     this.windText.setText(`WIND ${this.currentWindStrength.toFixed(2)}`)
 
     // Speed bar (bottom of left panel)
@@ -281,7 +296,7 @@ export class GameScene extends Phaser.Scene {
     const barY = 80
     const barW = 180
     const barH = 8
-    const speedFrac = Math.min(1, this.physState.speed / 6)
+    const speedFrac = Math.min(1, this.currentSpeed / this.HUD_SPEED_BAR_REF)
 
     this.hudGraphics.fillStyle(0x002244, 0.8)
     this.hudGraphics.fillRoundedRect(barX, barY, barW, barH, 4)
@@ -299,8 +314,8 @@ export class GameScene extends Phaser.Scene {
     this.hudGraphics.fillStyle(timerColor2, 0.9)
     this.hudGraphics.fillRect(0, h - timerBarH - 2, w * timerFrac, timerBarH + 2)
 
-    // Sail angle hint arc (bottom-center)
-    this.drawSailHint(w / 2, h - 55)
+    // Sail angle hint arc (bottom-center), scaled up 2x
+    this.drawSailHint(w / 2, h - 110)
   }
 
   private drawWindCompass(cx: number, cy: number, windDir: number, heading: number, windStrength: number): void {
@@ -376,30 +391,42 @@ export class GameScene extends Phaser.Scene {
 
   private drawSailHint(cx: number, cy: number): void {
     const g = this.hudGraphics
-    const r = 28
+    const scale = 2
+    const r = 28 * scale
 
     // Background
     g.fillStyle(0x001133, 0.6)
-    g.fillRoundedRect(cx - r - 30, cy - r - 4, (r + 30) * 2, r * 2 + 12, 8)
+    g.fillRoundedRect(
+      cx - r - 30 * scale,
+      cy - r - 4 * scale,
+      (r + 30 * scale) * 2,
+      r * 2 + 12 * scale,
+      8 * scale
+    )
 
-    // Optimal range arc (green)
-    const OPTIMAL = Math.PI * 0.6
-    const SWEET = Math.PI / 9
-    const GOOD = Math.PI / 4.5
-
-    // Draw arcs relative to wind direction
+    // Arcs match Physics zones: green 45° total, ±45° yellow bands each side
     const windDir = this.wind.direction
 
-    // Good range arc (yellow)
-    g.lineStyle(6, 0xffdd44, 0.4)
+    g.lineStyle(6 * scale, 0xffdd44, 0.4)
     g.beginPath()
-    g.arc(cx, cy, r, windDir + OPTIMAL - GOOD, windDir + OPTIMAL + GOOD)
+    g.arc(
+      cx,
+      cy,
+      r,
+      windDir + OPTIMAL_ANGLE - YELLOW_ZONE_OUTER_HALF_WIDTH,
+      windDir + OPTIMAL_ANGLE + YELLOW_ZONE_OUTER_HALF_WIDTH
+    )
     g.strokePath()
 
-    // Sweet spot arc (green)
-    g.lineStyle(6, 0x44ff88, 0.7)
+    g.lineStyle(6 * scale, 0x44ff88, 0.7)
     g.beginPath()
-    g.arc(cx, cy, r, windDir + OPTIMAL - SWEET, windDir + OPTIMAL + SWEET)
+    g.arc(
+      cx,
+      cy,
+      r,
+      windDir + OPTIMAL_ANGLE - GREEN_ZONE_HALF_WIDTH,
+      windDir + OPTIMAL_ANGLE + GREEN_ZONE_HALF_WIDTH
+    )
     g.strokePath()
 
     // Current sail position indicator
@@ -407,28 +434,28 @@ export class GameScene extends Phaser.Scene {
     const sx = cx + Math.cos(sailDir) * r
     const sy = cy + Math.sin(sailDir) * r
 
-    const sailColors: Record<string, number> = { green: 0x44ff88, yellow: 0xffdd44, red: 0xff6644 }
+    const sailColors: Record<string, number> = { green: 0x44ff88, yellow: 0xffdd44, gray: 0x9aa0a8 }
     const sailColor = sailColors[this.lastThrust.quality]
 
     g.fillStyle(sailColor, 1)
-    g.fillCircle(sx, sy, 5)
-    g.lineStyle(1.5, sailColor, 0.8)
+    g.fillCircle(sx, sy, 5 * scale)
+    g.lineStyle(1.5 * scale, sailColor, 0.8)
     g.beginPath()
     g.moveTo(cx, cy)
     g.lineTo(sx, sy)
     g.strokePath()
 
     // Wind direction indicator on the arc
-    const windX = cx + Math.cos(windDir) * (r - 8)
-    const windY = cy + Math.sin(windDir) * (r - 8)
+    const windX = cx + Math.cos(windDir) * (r - 8 * scale)
+    const windY = cy + Math.sin(windDir) * (r - 8 * scale)
     g.fillStyle(0xffffff, 0.8)
-    g.fillCircle(windX, windY, 3)
+    g.fillCircle(windX, windY, 3 * scale)
 
     // Center circle
-    g.lineStyle(1, 0x4488aa, 0.5)
+    g.lineStyle(1 * scale, 0x4488aa, 0.5)
     g.strokeCircle(cx, cy, r)
     g.fillStyle(0x001133, 0.8)
-    g.fillCircle(cx, cy, 4)
+    g.fillCircle(cx, cy, 4 * scale)
   }
 
   private showGameOver(): void {

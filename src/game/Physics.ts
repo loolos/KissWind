@@ -1,41 +1,44 @@
 // Physics constants
-export const K1 = 0.4   // linear drag coefficient
-export const K2 = 0.07  // quadratic drag coefficient
-export const MAX_SPEED = 6.0
-export const TURN_RATE = 0.3  // rad/s auto-steer rate
+export const K1 = 0.1   // linear drag coefficient
+export const K2 = 0.015 // quadratic drag coefficient
 
-// Sweet spot angles (relative to wind)
+// Sail angle zones (relative to wind): green = 45° total centered on optimal; ±45° beyond that = yellow
+// per side; outside = gray (low thrust).
 export const OPTIMAL_ANGLE = Math.PI * 0.6  // ~110 deg from wind direction (beam/close reach)
-export const SWEET_SPOT_RANGE = Math.PI / 9   // ±20 deg
-export const GOOD_RANGE = Math.PI / 4.5       // ±40 deg
+/** Half-width of green zone from optimal (total green span = 2 × this = 45°) */
+export const GREEN_ZONE_HALF_WIDTH = Math.PI / 8
+/** Outer edge of yellow zone from optimal (half-width of green + 45° per side) */
+export const YELLOW_ZONE_OUTER_HALF_WIDTH = GREEN_ZONE_HALF_WIDTH + Math.PI / 4
 
 export interface PhysicsState {
-  speed: number         // scalar speed
-  heading: number       // radians, 0 = right (+x)
   posX: number
   posY: number
+  velX: number
+  velY: number
+  accX: number
+  accY: number
 }
 
-export type SailQuality = 'green' | 'yellow' | 'red'
+export type SailQuality = 'green' | 'yellow' | 'gray'
 
 export interface ThrustResult {
-  thrust: number
+  thrustX: number
+  thrustY: number
+  thrustMag: number
   quality: SailQuality
   multiplier: number
 }
 
 /**
- * Compute the sail thrust given wind direction, sail angle (world space), boat heading, and wind strength.
+ * Compute sail force vector from wind and sail orientation.
  *
  * sailAngle: the absolute angle of the sail in world space (radians)
  * windDir:   direction the wind is blowing TOWARD (radians)
- * heading:   boat heading (radians)
  * windStrength: scalar wind strength
  */
 export function computeThrust(
   sailAngle: number,
   windDir: number,
-  heading: number,
   windStrength: number
 ): ThrustResult {
   // Wind vector (direction wind blows toward)
@@ -46,27 +49,9 @@ export function computeThrust(
   const sailNx = Math.cos(sailAngle + Math.PI / 2)
   const sailNy = Math.sin(sailAngle + Math.PI / 2)
 
-  // The angle of the sail relative to the wind direction
-  // We want the sail to catch wind: dot(wind, sailNormal) drives the sail
-  const windDotSail = Math.abs(windVx * sailNx + windVy * sailNy)
-
-  // The thrust projected onto boat heading
-  const headVx = Math.cos(heading)
-  const headVy = Math.sin(heading)
-
-  // Sail force direction is along the sail's lift (perpendicular to sail)
-  // We pick the sign that projects forward
-  let liftX = sailNx
-  let liftY = sailNy
-  if (liftX * headVx + liftY * headVy < 0) {
-    liftX = -liftX
-    liftY = -liftY
-  }
-
-  const forwardComponent = liftX * headVx + liftY * headVy
-
-  // Base thrust from wind-sail interaction
-  const baseThrust = windDotSail * forwardComponent * windStrength
+  // Signed wind projection on sail normal controls both magnitude and side.
+  const windOnNormal = windVx * sailNx + windVy * sailNy
+  const windDotSail = Math.abs(windOnNormal)
 
   // Compute angle between sail and wind to determine sweet spot
   // Sail direction angle
@@ -81,23 +66,23 @@ export function computeThrust(
   // Distance from optimal angle
   const distFromOptimal = Math.abs(relAngle - OPTIMAL_ANGLE)
 
-  let multiplier: number
+  const multiplier = 1.0
   let quality: SailQuality
 
-  if (distFromOptimal <= SWEET_SPOT_RANGE) {
-    multiplier = 1.5
+  if (distFromOptimal <= GREEN_ZONE_HALF_WIDTH) {
     quality = 'green'
-  } else if (distFromOptimal <= GOOD_RANGE) {
-    multiplier = 1.0
+  } else if (distFromOptimal <= YELLOW_ZONE_OUTER_HALF_WIDTH) {
     quality = 'yellow'
   } else {
-    multiplier = 0.3
-    quality = 'red'
+    quality = 'gray'
   }
 
-  const thrust = Math.max(0, baseThrust * multiplier * 3)
+  const forceScale = windOnNormal * windStrength * multiplier * 3
+  const thrustX = sailNx * forceScale
+  const thrustY = sailNy * forceScale
+  const thrustMag = Math.sqrt(thrustX * thrustX + thrustY * thrustY)
 
-  return { thrust, quality, multiplier }
+  return { thrustX, thrustY, thrustMag, quality, multiplier }
 }
 
 /**
@@ -105,42 +90,37 @@ export function computeThrust(
  */
 export function updatePhysics(
   state: PhysicsState,
-  thrust: number,
-  windDir: number,
+  thrustX: number,
+  thrustY: number,
   dt: number
 ): PhysicsState {
-  // Auto-steer: boat slowly turns toward the wind direction
-  // Ideal heading is roughly into the wind or with the wind (within ±90 deg of wind)
-  // We aim to have heading close to windDir (sailing downwind is fastest)
-  // But we also let the player influence via sail; for simplicity we auto-steer toward windDir
-  const targetHeading = windDir
-  let headingDiff = normalizeAngle(targetHeading - state.heading)
+  const speed = Math.sqrt(state.velX * state.velX + state.velY * state.velY)
 
-  // Clamp turn
-  const maxTurn = TURN_RATE * dt
-  const turn = Math.sign(headingDiff) * Math.min(Math.abs(headingDiff), maxTurn)
-  const newHeading = state.heading + turn
+  // Water drag opposes current velocity vector.
+  const dragMag = K1 * speed + K2 * speed * speed
+  let dragX = 0
+  let dragY = 0
+  if (speed > 1e-6) {
+    dragX = -(state.velX / speed) * dragMag
+    dragY = -(state.velY / speed) * dragMag
+  }
 
-  // Drag
-  const v = state.speed
-  const drag = -(K1 * v + K2 * v * v)
+  const accX = thrustX + dragX
+  const accY = thrustY + dragY
 
-  // Total acceleration
-  const accel = thrust + drag
+  const newVelX = state.velX + accX * dt
+  const newVelY = state.velY + accY * dt
 
-  // Update speed
-  let newSpeed = v + accel * dt
-  newSpeed = Math.max(0, Math.min(newSpeed, MAX_SPEED))
-
-  // Update position along heading
-  const newPosX = state.posX + Math.cos(newHeading) * newSpeed * dt
-  const newPosY = state.posY + Math.sin(newHeading) * newSpeed * dt
+  const newPosX = state.posX + newVelX * dt
+  const newPosY = state.posY + newVelY * dt
 
   return {
-    speed: newSpeed,
-    heading: newHeading,
     posX: newPosX,
     posY: newPosY,
+    velX: newVelX,
+    velY: newVelY,
+    accX,
+    accY,
   }
 }
 

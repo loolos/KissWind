@@ -76,7 +76,7 @@ export class BootScene extends Phaser.Scene {
     const instrSize = Math.min(w * 0.03, 16)
     this.add.text(
       w / 2, h * 0.78,
-      'Drag to rotate the sail\nFind the sweet spot for maximum speed\n60 seconds to sail as far as possible',
+      'Drag to rotate the sail\nFind the sweet spot for maximum speed\n180 seconds to sail as far as possible',
       {
         fontSize: instrSize + 'px',
         fontFamily: 'Arial, sans-serif',

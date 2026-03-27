@@ -4,6 +4,11 @@ import { normalizeAngle } from './Physics'
 /** World-space distances are divided by MAP_ZOOM so screen appearance matches pre-zoom behavior. */
 const Z = MAP_ZOOM
 
+/** Base wind strength level vs previous default (~1.0). */
+const BASE_WIND_STRENGTH_MULT = 1.5
+/** Wind direction angular change vs previous (applied to d(direction)/dt). */
+const WIND_DIRECTION_CHANGE_MULT = 0.3
+
 export interface WindZone {
   worldX: number
   worldY: number
@@ -26,7 +31,7 @@ export class Wind {
 
   constructor() {
     this.direction = Math.random() * Math.PI * 2
-    this.strength = 1.0
+    this.strength = 1.0 * BASE_WIND_STRENGTH_MULT
     this.driftRate = 0
     this.driftTimer = 0
     this.driftDuration = this.randomDriftDuration()
@@ -75,12 +80,18 @@ export class Wind {
 
     // Smoothly interpolate drift rate
     this.driftRate += (this.targetDrift - this.driftRate) * dt * 0.5
-    this.direction = normalizeAngle(this.direction + this.driftRate * dt)
+    this.direction = normalizeAngle(
+      this.direction + this.driftRate * dt * WIND_DIRECTION_CHANGE_MULT
+    )
 
     // Slowly vary strength
-    const strengthTarget = 0.8 + Math.sin(this.driftTimer * 0.3) * 0.4
+    const strengthTarget =
+      (0.8 + Math.sin(this.driftTimer * 0.3) * 0.4) * BASE_WIND_STRENGTH_MULT
     this.strength += (strengthTarget - this.strength) * dt * 0.1
-    this.strength = Math.max(0.5, Math.min(2.0, this.strength))
+    this.strength = Math.max(
+      0.5 * BASE_WIND_STRENGTH_MULT,
+      Math.min(2.0 * BASE_WIND_STRENGTH_MULT, this.strength)
+    )
 
     // Spawn/remove zones
     this.zoneTimer += dt

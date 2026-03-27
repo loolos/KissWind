@@ -2,9 +2,18 @@ import Phaser from 'phaser'
 import { SailQuality } from './Physics'
 
 /** Hull, mast, sail, strokes, and wake scale in the gameplay view (1 = original size). */
-const BOAT_VIS_SCALE = 3
+const BOAT_VIS_SCALE = 2.1
 
-/** Top-down hull (dark blue body + cream deck like reference art). */
+/**
+ * Camera ~30° above horizontal: deck fore-aft is foreshortened; mast/sail height maps to screen Y.
+ * (Line of sight depressed from horizontal by this angle.)
+ */
+const CAMERA_ELEV = Math.PI / 6
+
+const CE_COS = Math.cos(CAMERA_ELEV)
+const CE_SIN = Math.sin(CAMERA_ELEV)
+
+/** Hull (dark blue + cream deck). */
 const HULL_BODY = 0x1e4477
 const HULL_OUTLINE = 0x0d2644
 const DECK_FILL = 0xecd9b8
@@ -18,12 +27,11 @@ export class Boat {
   private graphics: Phaser.GameObjects.Graphics
   private trailGraphics: Phaser.GameObjects.Graphics
 
-  sailAngle: number  // world-space angle of the sail
-  heading: number    // boat heading (radians)
+  sailAngle: number
+  heading: number
   sailQuality: SailQuality = 'yellow'
   speed: number = 0
 
-  // For drawing wake/trail
   private trailPoints: { x: number; y: number }[] = []
   private trailTimer: number = 0
 
@@ -43,12 +51,20 @@ export class Boat {
     this.sailAngle = angle
   }
 
+  /** World horizontal offset from boat center → screen (Phaser y down). */
+  private projWorld(wx: number, wy: number, wz: number, cx: number, cy: number): { x: number; y: number } {
+    const S = BOAT_VIS_SCALE
+    return {
+      x: cx + wx * S,
+      y: cy + wy * S * CE_COS - wz * S * CE_SIN,
+    }
+  }
+
   update(dt: number, heading: number, speed: number, quality: SailQuality): void {
     this.heading = heading
     this.speed = speed
     this.sailQuality = quality
 
-    // Track trail
     this.trailTimer += dt
     if (this.trailTimer > 0.05) {
       this.trailTimer = 0
@@ -92,8 +108,10 @@ export class Boat {
     this.graphics.clear()
     const g = this.graphics
 
-    const hullLength = 44 * BOAT_VIS_SCALE
-    const hullWidth = 16 * BOAT_VIS_SCALE
+    const hullLength = 56 * BOAT_VIS_SCALE
+    const hullWidth = 12 * BOAT_VIS_SCALE
+    const mastHeight = 58 * BOAT_VIS_SCALE
+
     const hullPoints = this.buildHull(hullLength, hullWidth)
     const rotatedHull = hullPoints.map(p => this.rotatePoint(p.x, p.y, this.heading))
     const innerHull = hullPoints.map(p =>
@@ -103,57 +121,80 @@ export class Boat {
     const sh = 3 * BOAT_VIS_SCALE
     g.fillStyle(0x000000, 0.22)
     g.beginPath()
-    g.moveTo(cx + rotatedHull[0].x + sh, cy + rotatedHull[0].y + sh)
-    for (let i = 1; i < rotatedHull.length; i++) {
-      g.lineTo(cx + rotatedHull[i].x + sh, cy + rotatedHull[i].y + sh)
+    {
+      const p0 = this.projWorld(rotatedHull[0].x, rotatedHull[0].y, 0, cx, cy)
+      g.moveTo(p0.x + sh, p0.y + sh)
+      for (let i = 1; i < rotatedHull.length; i++) {
+        const p = this.projWorld(rotatedHull[i].x, rotatedHull[i].y, 0, cx, cy)
+        g.lineTo(p.x + sh, p.y + sh)
+      }
     }
     g.closePath()
     g.fillPath()
 
     g.fillStyle(HULL_BODY, 1)
     g.beginPath()
-    g.moveTo(cx + rotatedHull[0].x, cy + rotatedHull[0].y)
-    for (let i = 1; i < rotatedHull.length; i++) {
-      g.lineTo(cx + rotatedHull[i].x, cy + rotatedHull[i].y)
+    {
+      const p0 = this.projWorld(rotatedHull[0].x, rotatedHull[0].y, 0, cx, cy)
+      g.moveTo(p0.x, p0.y)
+      for (let i = 1; i < rotatedHull.length; i++) {
+        const p = this.projWorld(rotatedHull[i].x, rotatedHull[i].y, 0, cx, cy)
+        g.lineTo(p.x, p.y)
+      }
     }
     g.closePath()
     g.fillPath()
 
     g.fillStyle(DECK_FILL, 1)
     g.beginPath()
-    g.moveTo(cx + innerHull[0].x, cy + innerHull[0].y)
-    for (let i = 1; i < innerHull.length; i++) {
-      g.lineTo(cx + innerHull[i].x, cy + innerHull[i].y)
+    {
+      const p0 = this.projWorld(innerHull[0].x, innerHull[0].y, 0, cx, cy)
+      g.moveTo(p0.x, p0.y)
+      for (let i = 1; i < innerHull.length; i++) {
+        const p = this.projWorld(innerHull[i].x, innerHull[i].y, 0, cx, cy)
+        g.lineTo(p.x, p.y)
+      }
     }
     g.closePath()
     g.fillPath()
 
-    // Deck detail lines (top-down)
     const bow = this.rotatePoint(hullLength * 0.35, 0, this.heading)
     const stern = this.rotatePoint(-hullLength * 0.35, 0, this.heading)
     g.lineStyle(1.2 * BOAT_VIS_SCALE, DECK_LINE, 0.55)
-    g.beginPath()
-    g.moveTo(cx + bow.x * 0.55, cy + bow.y * 0.55)
-    g.lineTo(cx + stern.x * 0.55, cy + stern.y * 0.55)
-    g.strokePath()
-    g.beginPath()
-    g.moveTo(cx + bow.x * 0.35, cy + bow.y * 0.35)
-    g.lineTo(cx + stern.x * 0.35, cy + stern.y * 0.35)
-    g.strokePath()
+    {
+      const a = this.projWorld(bow.x * 0.55, bow.y * 0.55, 0, cx, cy)
+      const b = this.projWorld(stern.x * 0.55, stern.y * 0.55, 0, cx, cy)
+      g.beginPath()
+      g.moveTo(a.x, a.y)
+      g.lineTo(b.x, b.y)
+      g.strokePath()
+    }
+    {
+      const a = this.projWorld(bow.x * 0.35, bow.y * 0.35, 0, cx, cy)
+      const b = this.projWorld(stern.x * 0.35, stern.y * 0.35, 0, cx, cy)
+      g.beginPath()
+      g.moveTo(a.x, a.y)
+      g.lineTo(b.x, b.y)
+      g.strokePath()
+    }
 
     g.lineStyle(2 * BOAT_VIS_SCALE, HULL_OUTLINE, 1)
     g.beginPath()
-    g.moveTo(cx + rotatedHull[0].x, cy + rotatedHull[0].y)
-    for (let i = 1; i < rotatedHull.length; i++) {
-      g.lineTo(cx + rotatedHull[i].x, cy + rotatedHull[i].y)
+    {
+      const p0 = this.projWorld(rotatedHull[0].x, rotatedHull[0].y, 0, cx, cy)
+      g.moveTo(p0.x, p0.y)
+      for (let i = 1; i < rotatedHull.length; i++) {
+        const p = this.projWorld(rotatedHull[i].x, rotatedHull[i].y, 0, cx, cy)
+        g.lineTo(p.x, p.y)
+      }
     }
     g.closePath()
     g.strokePath()
 
-    // Mast position on deck (plan view)
     const mastX = 5 * BOAT_VIS_SCALE
-    const mastBase = this.rotatePoint(mastX, 0, this.heading)
-    const mastPt = { x: cx + mastBase.x, y: cy + mastBase.y }
+    const mastBaseOff = this.rotatePoint(mastX, 0, this.heading)
+    const mast_wx = mastBaseOff.x
+    const mast_wy = mastBaseOff.y
 
     let sailColor: number
     let sailAlpha: number
@@ -166,22 +207,21 @@ export class Boat {
         sailColor = 0xffdd44
         sailAlpha = 0.92
         break
-      case 'red':
-        sailColor = 0xff4444
-        sailAlpha = 0.85
+      case 'gray':
+        sailColor = 0x9aa0a8
+        sailAlpha = 0.88
         break
     }
 
     const beamUx = Math.cos(this.heading + Math.PI / 2)
     const beamUy = Math.sin(this.heading + Math.PI / 2)
     const clewDist = 56 * BOAT_VIS_SCALE
-    const clew = {
-      x: mastPt.x + Math.cos(this.sailAngle) * clewDist,
-      y: mastPt.y + Math.sin(this.sailAngle) * clewDist,
-    }
 
-    const toClewX = clew.x - mastPt.x
-    const toClewY = clew.y - mastPt.y
+    const clew_wx = mast_wx + Math.cos(this.sailAngle) * clewDist
+    const clew_wy = mast_wy + Math.sin(this.sailAngle) * clewDist
+
+    const toClewX = clew_wx - mast_wx
+    const toClewY = clew_wy - mast_wy
     const pullStarboard = toClewX * beamUx + toClewY * beamUy > 0
     const fullHalf = hullWidth * 0.52
     const smallHalf = fullHalf * 0.36
@@ -194,14 +234,14 @@ export class Boat {
       portDist = fullHalf
       starDist = smallHalf
     }
-    const footPort = {
-      x: mastPt.x - beamUx * portDist,
-      y: mastPt.y - beamUy * portDist,
-    }
-    const footStar = {
-      x: mastPt.x + beamUx * starDist,
-      y: mastPt.y + beamUy * starDist,
-    }
+
+    const footPort_wx = mast_wx - beamUx * portDist
+    const footPort_wy = mast_wy - beamUy * portDist
+    const footStar_wx = mast_wx + beamUx * starDist
+    const footStar_wy = mast_wy + beamUy * starDist
+
+    const mastTop = this.projWorld(mast_wx, mast_wy, mastHeight, cx, cy)
+    const mastBase = this.projWorld(mast_wx, mast_wy, 0, cx, cy)
 
     const drawSailTri = (
       ax: number,
@@ -252,11 +292,15 @@ export class Boat {
       }
     }
 
+    const footPort = this.projWorld(footPort_wx, footPort_wy, 0, cx, cy)
+    const footStar = this.projWorld(footStar_wx, footStar_wy, 0, cx, cy)
+    const clew = this.projWorld(clew_wx, clew_wy, 0, cx, cy)
+
     const sailSh = 2 * BOAT_VIS_SCALE
     g.fillStyle(0x000000, 0.12)
     for (const [fx, fy, tx, ty] of [
-      [footPort.x, footPort.y, mastPt.x, mastPt.y],
-      [footStar.x, footStar.y, mastPt.x, mastPt.y],
+      [footPort.x, footPort.y, mastTop.x, mastTop.y],
+      [footStar.x, footStar.y, mastTop.x, mastTop.y],
     ] as const) {
       g.beginPath()
       g.moveTo(fx + sailSh, fy + sailSh)
@@ -267,11 +311,11 @@ export class Boat {
     }
 
     const smallPanel = pullStarboard
-      ? [footPort.x, footPort.y, mastPt.x, mastPt.y, clew.x, clew.y] as const
-      : [footStar.x, footStar.y, mastPt.x, mastPt.y, clew.x, clew.y] as const
+      ? [footPort.x, footPort.y, mastTop.x, mastTop.y, clew.x, clew.y] as const
+      : [footStar.x, footStar.y, mastTop.x, mastTop.y, clew.x, clew.y] as const
     const bigPanel = pullStarboard
-      ? [footStar.x, footStar.y, mastPt.x, mastPt.y, clew.x, clew.y] as const
-      : [footPort.x, footPort.y, mastPt.x, mastPt.y, clew.x, clew.y] as const
+      ? [footStar.x, footStar.y, mastTop.x, mastTop.y, clew.x, clew.y] as const
+      : [footPort.x, footPort.y, mastTop.x, mastTop.y, clew.x, clew.y] as const
 
     drawSailTri(
       smallPanel[0],
@@ -313,26 +357,24 @@ export class Boat {
       sailAlpha
     )
 
-    // Third sail: smaller, on the side opposite the main clew (plan view)
     const dSmall = clewDist * 0.44
-    const oppClew = {
-      x: mastPt.x + Math.cos(this.sailAngle + Math.PI) * dSmall,
-      y: mastPt.y + Math.sin(this.sailAngle + Math.PI) * dSmall,
-    }
+    const oppClew_wx = mast_wx + Math.cos(this.sailAngle + Math.PI) * dSmall
+    const oppClew_wy = mast_wy + Math.sin(this.sailAngle + Math.PI) * dSmall
     const oppSign = pullStarboard ? -1 : 1
-    const footOppA = {
-      x: mastPt.x + beamUx * oppSign * fullHalf * 0.62,
-      y: mastPt.y + beamUy * oppSign * fullHalf * 0.62,
-    }
-    const footOppB = {
-      x: mastPt.x + beamUx * oppSign * fullHalf * 0.2,
-      y: mastPt.y + beamUy * oppSign * fullHalf * 0.2,
-    }
+    const footOppA_wx = mast_wx + beamUx * oppSign * fullHalf * 0.62
+    const footOppA_wy = mast_wy + beamUy * oppSign * fullHalf * 0.62
+    const footOppB_wx = mast_wx + beamUx * oppSign * fullHalf * 0.2
+    const footOppB_wy = mast_wy + beamUy * oppSign * fullHalf * 0.2
 
+    const footOppA = this.projWorld(footOppA_wx, footOppA_wy, 0, cx, cy)
+    const footOppB = this.projWorld(footOppB_wx, footOppB_wy, 0, cx, cy)
+    const oppClew = this.projWorld(oppClew_wx, oppClew_wy, 0, cx, cy)
+
+    // Smaller opposite sail: shares mast head; foot along boom side (narrow)
     g.fillStyle(0x000000, 0.1)
     g.beginPath()
     g.moveTo(footOppA.x + sailSh, footOppA.y + sailSh)
-    g.lineTo(footOppB.x + sailSh, footOppB.y + sailSh)
+    g.lineTo(mastTop.x + sailSh, mastTop.y + sailSh)
     g.lineTo(oppClew.x + sailSh, oppClew.y + sailSh)
     g.closePath()
     g.fillPath()
@@ -340,14 +382,20 @@ export class Boat {
     drawSailTri(
       footOppA.x,
       footOppA.y,
-      footOppB.x,
-      footOppB.y,
+      mastTop.x,
+      mastTop.y,
       oppClew.x,
       oppClew.y,
       sailColor,
       sailAlpha * 0.72
     )
-    drawStripes(footOppA.x, footOppA.y, footOppB.x, footOppB.y, oppClew.x, oppClew.y, sailAlpha * 0.72)
+    drawStripes(footOppA.x, footOppA.y, mastTop.x, mastTop.y, oppClew.x, oppClew.y, sailAlpha * 0.72)
+
+    g.lineStyle(1.2 * BOAT_VIS_SCALE, 0x4a3010, 0.65)
+    g.beginPath()
+    g.moveTo(footOppA.x, footOppA.y)
+    g.lineTo(footOppB.x, footOppB.y)
+    g.strokePath()
 
     g.lineStyle(2 * BOAT_VIS_SCALE, 0x4a3010, 0.85)
     g.beginPath()
@@ -355,25 +403,36 @@ export class Boat {
     g.lineTo(footStar.x, footStar.y)
     g.strokePath()
 
-    // Mast as deck fixture (top-down)
+    g.lineStyle(2.5 * BOAT_VIS_SCALE, MAST_BODY, 1)
+    g.beginPath()
+    g.moveTo(mastBase.x, mastBase.y)
+    g.lineTo(mastTop.x, mastTop.y)
+    g.strokePath()
+    g.lineStyle(1.5 * BOAT_VIS_SCALE, HULL_OUTLINE, 0.9)
+    g.beginPath()
+    g.moveTo(mastBase.x, mastBase.y)
+    g.lineTo(mastTop.x, mastTop.y)
+    g.strokePath()
+
     const mr = 4 * BOAT_VIS_SCALE
     g.fillStyle(MAST_BODY, 1)
-    g.fillCircle(mastPt.x, mastPt.y, mr)
+    g.fillCircle(mastBase.x, mastBase.y, mr)
     g.lineStyle(1.5 * BOAT_VIS_SCALE, HULL_OUTLINE, 1)
-    g.strokeCircle(mastPt.x, mastPt.y, mr)
+    g.strokeCircle(mastBase.x, mastBase.y, mr)
     g.fillStyle(MAST_CAP, 1)
-    g.fillCircle(mastPt.x, mastPt.y, mr * 0.45)
+    g.fillCircle(mastTop.x, mastTop.y, mr * 0.55)
 
     if (this.speed > 0.5) {
       const dotCount = Math.min(5, Math.floor(this.speed))
       for (let i = 0; i < dotCount; i++) {
-        const bowTip = this.rotatePoint(
+        const bowOff = this.rotatePoint(
           hullLength / 2 + 8 * BOAT_VIS_SCALE + i * 5 * BOAT_VIS_SCALE,
           0,
           this.heading
         )
+        const p = this.projWorld(bowOff.x, bowOff.y, 0, cx, cy)
         g.fillStyle(0xffffff, 0.5 - i * 0.08)
-        g.fillCircle(cx + bowTip.x, cy + bowTip.y, 2 * BOAT_VIS_SCALE)
+        g.fillCircle(p.x, p.y, 2 * BOAT_VIS_SCALE)
       }
     }
   }
