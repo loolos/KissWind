@@ -3,11 +3,10 @@ import { screenToWorld, worldToScreen } from './camera'
 import { MAP_ZOOM_BASE, viewportHalfExtents } from './mapConfig'
 import { WindZone } from './Wind'
 
-/** Swell travel direction in world radians (+X = east). Not tied to wind. */
-const WAVE_SWELL_DIR = Math.PI * 0.22
-
-/** World-space drift speed scale (units/s), multiplied by each line’s random speed. */
+/** World-space drift speed scale (units/s), multiplied by each line’s random speed and current strength. */
 const WAVE_DRIFT_SPEED = 1.1
+/** `speed` from WaterCurrent — maps to drift multiplier (~1 at mid range). */
+const WAVE_FLOW_SPEED_REF = 2.8
 
 /** Decorative swell contours: wavelength & amplitude in world units (locked to world, not the screen). */
 const WAVE_CONTOUR_WL = 34
@@ -125,17 +124,22 @@ export class World {
     boatY: number,
     windDir: number,
     _windStrength: number,
-    zones: WindZone[]
+    zones: WindZone[],
+    /** Direction surface water flows toward (radians). Background swell contours run ⊥ to this. */
+    waterFlowDir: number,
+    waterFlowSpeed: number
   ): void {
     const { halfW, halfH } = this.viewportHalfExtents()
 
-    // Fixed-direction swell (slow); shimmer time independent of wind
+    const flowScale = Phaser.Math.Clamp(waterFlowSpeed / WAVE_FLOW_SPEED_REF, 0.62, 1.38)
+
+    // Swell / ripple drift with current; shimmer time independent of wind
     this.waveOffset += dt * 1.2
 
     for (const wl of this.waveLines) {
-      const step = WAVE_DRIFT_SPEED * wl.speed * dt
-      wl.worldX += Math.cos(WAVE_SWELL_DIR) * step
-      wl.worldY += Math.sin(WAVE_SWELL_DIR) * step
+      const step = WAVE_DRIFT_SPEED * wl.speed * dt * flowScale
+      wl.worldX += Math.cos(waterFlowDir) * step
+      wl.worldY += Math.sin(waterFlowDir) * step
       this.wrapWorldPoint(wl, boatX, boatY, halfW, halfH)
     }
 
@@ -144,7 +148,7 @@ export class World {
       this.wrapWorldPoint(d, boatX, boatY, halfW, halfH)
     }
 
-    this.draw(windDir, zones, boatX, boatY)
+    this.draw(windDir, zones, boatX, boatY, waterFlowDir)
   }
 
   /** Depth tint from world Y so the base moves with the map (not glued to the screen). */
@@ -174,25 +178,26 @@ export class World {
   }
 
   /**
-   * Swell-parallel stripes in **world** coordinates: rest position is fixed on the perpendicular
-   * axis (pRest = line × spacing). Undulation is only from trig — spatial phase `k*a` uses world
-   * along-coordinate `a`; time enters as angle offsets via `waveOffset`, not by moving pRest.
-   * W = a·S + p·P with S = swell direction, P = (−sin, cos) ⟂ S.
+   * Swell contours in **world** coordinates: polylines extend along axis S; phase undulates in P ⟂ S.
+   * S must be **perpendicular to water flow** so visible wave bands cross the current, not run with it.
+   * `waterFlowDir` = direction water flows toward; we use S = flow + π/2.
    */
   private drawWaterWaveContours(
     boatX: number,
     boatY: number,
     z: number,
     w: number,
-    h: number
+    h: number,
+    waterFlowDir: number
   ): void {
     const g = this.waterGraphics
     const margin = 1.35
     const spanAlong = (Math.max(w, h) / z) * margin
     const spanPerp = spanAlong
     const steps = Math.min(96, Math.max(40, Math.ceil(spanAlong * 0.72)))
-    const cosS = Math.cos(WAVE_SWELL_DIR)
-    const sinS = Math.sin(WAVE_SWELL_DIR)
+    const swellAlongDir = waterFlowDir + Math.PI / 2
+    const cosS = Math.cos(swellAlongDir)
+    const sinS = Math.sin(swellAlongDir)
     const k = (Math.PI * 2) / WAVE_CONTOUR_WL
     const k2 = k * 1.85
 
@@ -227,7 +232,13 @@ export class World {
     }
   }
 
-  private draw(windDir: number, zones: WindZone[], boatX: number, boatY: number): void {
+  private draw(
+    windDir: number,
+    zones: WindZone[],
+    boatX: number,
+    boatY: number,
+    waterFlowDir: number
+  ): void {
     const w = this.scene.scale.width
     const h = this.scene.scale.height
     const z = this.mapZoom
@@ -245,11 +256,11 @@ export class World {
       this.waterGraphics.fillRect(0, y0, w, y1 - y0)
     }
 
-    this.drawWaterWaveContours(boatX, boatY, z, w, h)
+    this.drawWaterWaveContours(boatX, boatY, z, w, h, waterFlowDir)
 
     for (const wl of this.waveLines) {
-      const perpX = Math.cos(WAVE_SWELL_DIR + Math.PI / 2)
-      const perpY = Math.sin(WAVE_SWELL_DIR + Math.PI / 2)
+      const perpX = Math.cos(waterFlowDir + Math.PI / 2)
+      const perpY = Math.sin(waterFlowDir + Math.PI / 2)
       const half = wl.length / 2
       const c = worldToScreen(wl.worldX, wl.worldY, boatX, boatY, z, w, h)
       const shimmer =

@@ -14,6 +14,7 @@ import {
 } from '../game/Physics'
 import { MAP_ZOOM_LEVELS } from '../game/mapConfig'
 import { AmbientMusic } from '../game/AmbientMusic'
+import { WaterCurrent } from '../game/WaterCurrent'
 
 const GAME_DURATION = 180  // seconds
 
@@ -22,6 +23,7 @@ export class GameScene extends Phaser.Scene {
   private boat!: Boat
   private wind!: Wind
   private world!: World
+  private waterCurrent!: WaterCurrent
 
   // Physics state
   private physState!: PhysicsState
@@ -67,6 +69,8 @@ export class GameScene extends Phaser.Scene {
 
   /** HUD speed bar full scale only (not a physics cap). */
   private readonly HUD_SPEED_BAR_REF = 20
+  /** Top compass: current arrow reaches ~full radius at this |current| (world units/s). */
+  private readonly HUD_CURRENT_SPEED_REF = 5
 
   constructor() {
     super({ key: 'GameScene' })
@@ -86,6 +90,7 @@ export class GameScene extends Phaser.Scene {
 
     // Initialize systems
     this.wind = new Wind()
+    this.waterCurrent = new WaterCurrent()
     this.world = new World(this)
     this.boat = new Boat(this)
 
@@ -389,6 +394,10 @@ export class GameScene extends Phaser.Scene {
       this.currentHeading
     )
 
+    this.waterCurrent.update(dt)
+    const curX = this.waterCurrent.velX
+    const curY = this.waterCurrent.velY
+
     // Get effective wind strength at boat position
     const effectiveStrength = this.wind.getStrengthAt(this.physState.posX, this.physState.posY)
     this.currentWindStrength = effectiveStrength
@@ -400,20 +409,26 @@ export class GameScene extends Phaser.Scene {
       effectiveStrength
     )
 
-    // Update physics
+    // Update physics (vel = motion relative to water; current adds to ground track)
     const prevPos = { x: this.physState.posX, y: this.physState.posY }
-    const prevSpeed = Math.sqrt(this.physState.velX * this.physState.velX + this.physState.velY * this.physState.velY)
+    const prevGx = this.physState.velX + curX
+    const prevGy = this.physState.velY + curY
+    const prevGroundSpeed = Math.sqrt(prevGx * prevGx + prevGy * prevGy)
     this.physState = updatePhysics(
       this.physState,
       this.lastThrust.thrustX,
       this.lastThrust.thrustY,
-      dt
+      dt,
+      curX,
+      curY
     )
-    this.currentSpeed = Math.sqrt(this.physState.velX * this.physState.velX + this.physState.velY * this.physState.velY)
+    const gx = this.physState.velX + curX
+    const gy = this.physState.velY + curY
+    this.currentSpeed = Math.sqrt(gx * gx + gy * gy)
     if (this.currentSpeed > 1e-6) {
-      this.currentHeading = Math.atan2(this.physState.velY, this.physState.velX)
+      this.currentHeading = Math.atan2(gy, gx)
     }
-    this.currentAcceleration = dt > 0 ? (this.currentSpeed - prevSpeed) / dt : 0
+    this.currentAcceleration = dt > 0 ? (this.currentSpeed - prevGroundSpeed) / dt : 0
 
     // Accumulate distance
     const dx = this.physState.posX - prevPos.x
@@ -424,7 +439,16 @@ export class GameScene extends Phaser.Scene {
     this.boat.update(dt, this.currentHeading, this.currentSpeed, this.lastThrust.quality, this.world.mapZoom)
 
     // World map: all entities use world coords; boat-centered projection in World
-    this.world.update(dt, this.physState.posX, this.physState.posY, this.wind.direction, effectiveStrength, this.wind.zones)
+    this.world.update(
+      dt,
+      this.physState.posX,
+      this.physState.posY,
+      this.wind.direction,
+      effectiveStrength,
+      this.wind.zones,
+      this.waterCurrent.direction,
+      this.waterCurrent.speed
+    )
 
     // Update HUD
     this.updateHUD()
@@ -463,8 +487,15 @@ export class GameScene extends Phaser.Scene {
     this.hudGraphics.fillStyle(0x000022, panelAlpha)
     this.hudGraphics.fillRoundedRect(w - 120, 8, 112, 36, 8)
 
-    // Wind direction compass (top-center)
-    this.drawWindCompass(w / 2, 44, this.wind.direction, this.currentHeading, this.currentWindStrength)
+    // Wind + heading compass (top-center); aqua arrow = water current (length ∝ speed)
+    this.drawWindCompass(
+      w / 2,
+      44,
+      this.wind.direction,
+      this.currentHeading,
+      this.waterCurrent.direction,
+      this.waterCurrent.speed
+    )
     this.windText.setText(`WIND ${this.currentWindStrength.toFixed(2)}`)
 
     const sailCx = w / 2
@@ -490,7 +521,14 @@ export class GameScene extends Phaser.Scene {
     this.drawSailHint(sailCx, sailCy)
   }
 
-  private drawWindCompass(cx: number, cy: number, windDir: number, heading: number, windStrength: number): void {
+  private drawWindCompass(
+    cx: number,
+    cy: number,
+    windDir: number,
+    heading: number,
+    currentDir: number,
+    currentSpeed: number
+  ): void {
     const g = this.hudGraphics
     const r = 30
 
@@ -507,7 +545,54 @@ export class GameScene extends Phaser.Scene {
       g.fillCircle(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 2)
     }
 
-    // Boat heading arrow (blue)
+    // Wind direction (white): fixed length; strength is in WIND label.
+    const windLen = 18
+    const wx = Math.cos(windDir)
+    const wy = Math.sin(windDir)
+    g.lineStyle(2, 0xffffff, 0.75)
+    g.beginPath()
+    g.moveTo(cx - wx * windLen, cy - wy * windLen)
+    g.lineTo(cx + wx * windLen, cy + wy * windLen)
+    g.strokePath()
+
+    const wHeadSize = 5
+    const wLeft = windDir + Math.PI * 0.75
+    const wRight = windDir - Math.PI * 0.75
+    const wTipX = cx + wx * windLen
+    const wTipY = cy + wy * windLen
+    g.fillStyle(0xffffff, 0.75)
+    g.beginPath()
+    g.moveTo(wTipX, wTipY)
+    g.lineTo(wTipX + Math.cos(wLeft) * wHeadSize, wTipY + Math.sin(wLeft) * wHeadSize)
+    g.lineTo(wTipX + Math.cos(wRight) * wHeadSize, wTipY + Math.sin(wRight) * wHeadSize)
+    g.closePath()
+    g.fillPath()
+
+    // Water current (aqua): direction = flow toward, length ∝ |current|
+    const curFrac = Math.min(1, currentSpeed / this.HUD_CURRENT_SPEED_REF)
+    const curLen = Phaser.Math.Clamp(6 + curFrac * (r + 2), 6, r + 2)
+    const cxw = Math.cos(currentDir)
+    const cyw = Math.sin(currentDir)
+    g.lineStyle(2.5, 0x55dde8, 0.92)
+    g.beginPath()
+    g.moveTo(cx - cxw * curLen, cy - cyw * curLen)
+    g.lineTo(cx + cxw * curLen, cy + cyw * curLen)
+    g.strokePath()
+
+    const cHeadSize = 6
+    const cLeft = currentDir + Math.PI * 0.75
+    const cRight = currentDir - Math.PI * 0.75
+    const cTipX = cx + cxw * curLen
+    const cTipY = cy + cyw * curLen
+    g.fillStyle(0x55dde8, 0.92)
+    g.beginPath()
+    g.moveTo(cTipX, cTipY)
+    g.lineTo(cTipX + Math.cos(cLeft) * cHeadSize, cTipY + Math.sin(cLeft) * cHeadSize)
+    g.lineTo(cTipX + Math.cos(cRight) * cHeadSize, cTipY + Math.sin(cRight) * cHeadSize)
+    g.closePath()
+    g.fillPath()
+
+    // Boat heading arrow (blue), on top
     const hx = Math.cos(heading)
     const hy = Math.sin(heading)
     g.lineStyle(3, 0x4488ff, 0.9)
@@ -516,7 +601,6 @@ export class GameScene extends Phaser.Scene {
     g.lineTo(cx + hx * (r - 5), cy + hy * (r - 5))
     g.strokePath()
 
-    // Arrow head for heading
     const headSize = 7
     const left = heading + Math.PI * 0.75
     const right = heading - Math.PI * 0.75
@@ -530,35 +614,11 @@ export class GameScene extends Phaser.Scene {
     g.closePath()
     g.fillPath()
 
-    // Wind direction arrow (white/light), length indicates wind speed.
-    const windLen = Phaser.Math.Clamp(10 + windStrength * 13, 10, r + 2)
-    const wx = Math.cos(windDir)
-    const wy = Math.sin(windDir)
-    g.lineStyle(2, 0xffffff, 0.8)
-    g.beginPath()
-    g.moveTo(cx - wx * windLen, cy - wy * windLen)
-    g.lineTo(cx + wx * windLen, cy + wy * windLen)
-    g.strokePath()
-
-    // Wind arrow tip (triangle)
-    const wHeadSize = 6
-    const wLeft = windDir + Math.PI * 0.75
-    const wRight = windDir - Math.PI * 0.75
-    const wTipX = cx + wx * windLen
-    const wTipY = cy + wy * windLen
-    g.fillStyle(0xffffff, 0.8)
-    g.beginPath()
-    g.moveTo(wTipX, wTipY)
-    g.lineTo(wTipX + Math.cos(wLeft) * wHeadSize, wTipY + Math.sin(wLeft) * wHeadSize)
-    g.lineTo(wTipX + Math.cos(wRight) * wHeadSize, wTipY + Math.sin(wRight) * wHeadSize)
-    g.closePath()
-    g.fillPath()
-
     // Center dot
     g.fillStyle(0xffffff, 1)
     g.fillCircle(cx, cy, 3)
 
-    // Text label/value is drawn by this.windText ("WIND x.xx")
+    // Text: this.windText ("WIND x.xx")
   }
 
   private drawSailHint(cx: number, cy: number): void {

@@ -1,6 +1,12 @@
 import Phaser from 'phaser'
 import { MAP_ZOOM_BASE } from './mapConfig'
 import { SailQuality } from './Physics'
+import { BASE_WIND } from './Wind'
+
+/** Stern spray appears from this ground speed upward (7× base wind scale). */
+const SPRAY_SPEED_SMALL = BASE_WIND * 7
+/** Larger foam / spray from this speed (10× base wind scale). */
+const SPRAY_SPEED_LARGE = BASE_WIND * 10
 
 /** Hull, mast, sail, strokes, and wake scale in the gameplay view (1 = original size). */
 const BOAT_VIS_SCALE = 2.1
@@ -35,6 +41,8 @@ export class Boat {
 
   private trailPoints: { x: number; y: number }[] = []
   private trailTimer: number = 0
+  /** Animates stern spray / foam phase. */
+  private wakeAnimT = 0
   /** BOAT_VIS_SCALE × (mapZoom / MAP_ZOOM_BASE)^0.3; zoom out → smaller boat, gentler than sqrt. */
   private visScale: number = BOAT_VIS_SCALE
 
@@ -80,7 +88,59 @@ export class Boat {
       }
     }
 
+    this.wakeAnimT += dt * (5 + this.speed * 0.4)
+
     this.draw()
+  }
+
+  /** Foam / spray astern; `wakeAngle` points toward the wake (stern direction). */
+  private drawSternSpray(cx: number, cy: number, wakeAngle: number): void {
+    const g = this.trailGraphics
+    const t = this.wakeAnimT
+    const large = this.speed >= SPRAY_SPEED_LARGE
+    const S = this.visScale
+    /** Matches hull fore–aft span used in `draw` (world units × scale). */
+    const hullLen = 56 * S
+    /** Aft of boat center: near-stern offset + ¼ hull (was ½ hull; nudged forward ¼ hull). */
+    const sternDist = 24 * S + hullLen * 0.25
+    const sx = cx + Math.cos(wakeAngle) * sternDist
+    const sy = cy + Math.sin(wakeAngle) * sternDist
+    const perp = wakeAngle + Math.PI / 2
+
+    const nDots = large ? 11 : 7
+    for (let i = 0; i < nDots; i++) {
+      const ph = t * 2.2 + i * 1.63
+      const spread = (i - (nDots - 1) * 0.5) * 5.2 * S
+      const px = sx + Math.cos(perp) * spread + Math.sin(ph) * 6.5 * S
+      const py = sy + Math.sin(perp) * spread + Math.cos(ph * 0.88) * 5 * S
+      const r = (large ? 4.1 : 2.9) * S + Math.sin(ph * 1.7) * 0.55 * S
+      g.fillStyle(0xc8e8ff, large ? 0.52 : 0.4)
+      g.fillCircle(px, py, r)
+    }
+
+    if (large) {
+      for (let j = 0; j < 6; j++) {
+        const ph2 = t * 1.55 + j * 2.1
+        const back = (12 + j * 7.5) * S
+        const bx = sx + Math.cos(wakeAngle) * back
+        const by = sy + Math.sin(wakeAngle) * back
+        const wob = Math.sin(ph2) * 7 * S
+        g.fillStyle(0xffffff, 0.26 + (j % 2) * 0.09)
+        g.fillEllipse(
+          bx + Math.cos(perp) * wob,
+          by + Math.sin(perp) * wob * 0.6,
+          (17 + j * 1.1) * S,
+          (10 + j * 0.75) * S
+        )
+      }
+      g.lineStyle(1.45 * S, 0xffffff, 0.32)
+      g.beginPath()
+      const arcR = 22 * S
+      const ax = sx + Math.cos(wakeAngle) * (16 * S)
+      const ay = sy + Math.sin(wakeAngle) * (16 * S)
+      g.arc(ax, ay, arcR, wakeAngle - 0.58, wakeAngle + 0.58, false)
+      g.strokePath()
+    }
   }
 
   private draw(): void {
@@ -90,13 +150,17 @@ export class Boat {
     this.trailGraphics.clear()
     if (this.speed > 0.3) {
       const wakeAngle = this.heading + Math.PI
+      const wakeSegs = Math.round(
+        Phaser.Math.Clamp(10 + this.speed * 1.35, 10, 52)
+      )
+      const distStep = Phaser.Math.Clamp(3.2 + this.speed * 0.42, 3.2, 13) * this.visScale
       for (let side = -1; side <= 1; side += 2) {
         this.trailGraphics.lineStyle(1.5 * this.visScale, 0xaaddff, 0.3)
         this.trailGraphics.beginPath()
         let first = true
-        for (let i = 0; i < 20; i++) {
-          const t = i / 20
-          const dist = i * 6 * this.visScale
+        for (let i = 0; i < wakeSegs; i++) {
+          const t = wakeSegs > 1 ? i / (wakeSegs - 1) : 0
+          const dist = i * distStep
           const spreadAngle = wakeAngle + side * t * 0.35
           const wx = cx + Math.cos(spreadAngle) * dist
           const wy = cy + Math.sin(spreadAngle) * dist
@@ -106,6 +170,10 @@ export class Boat {
           } else this.trailGraphics.lineTo(wx, wy)
         }
         this.trailGraphics.strokePath()
+      }
+
+      if (this.speed >= SPRAY_SPEED_SMALL) {
+        this.drawSternSpray(cx, cy, wakeAngle)
       }
     }
 

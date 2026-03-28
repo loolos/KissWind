@@ -5,7 +5,7 @@ import { normalizeAngle } from './Physics'
  * Base wind strength (global scale). `Wind.strength` and its oscillation band are built from this;
  * gust / dead zones apply fixed coefficients to the current `strength` (see `getStrengthAt`).
  */
-const BASE_WIND = 3
+export const BASE_WIND = 3
 /** Wind direction angular change vs previous (applied to d(direction)/dt). */
 const WIND_DIRECTION_CHANGE_MULT = 0.3
 

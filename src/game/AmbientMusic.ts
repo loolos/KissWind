@@ -1,7 +1,7 @@
 /**
  * Procedural gentle ambient: sparse random pentatonic notes + soft pad.
  * Pad note pool = 5 consecutive rungs on a C-major Do…La ladder (C3 default);
- * every +3 boat speed, window shifts up one rung; tier applies on the same 2–4s tick as note/timbre.
+ * every +6 boat speed, window shifts up one rung; tier applies on the same 2–4s tick as note/timbre.
  */
 
 const PENTATONIC_HZ = [
@@ -20,7 +20,10 @@ const PAD_LADDER_C3_MIDI = 48
 /** Semitone offsets from C for one CDEFGA cycle before the next C. */
 const PAD_LADDER_RUNG: readonly number[] = [0, 2, 4, 5, 7, 9]
 
-/** floor(boatSpeed / 3) clamped to [0, this]. */
+/** Boat speed units per ladder tier (floor(speed / this) = step). */
+const PAD_SPEED_PER_TIER = 6
+
+/** floor(boatSpeed / PAD_SPEED_PER_TIER) clamped to [0, this]. */
 const PAD_SPEED_STEP_MAX = 40
 
 function padLadderMidi(index: number): number {
@@ -142,10 +145,14 @@ export class AmbientMusic {
   }
 
   /**
-   * Records boat-speed tier; pad pitch pool and timbre only update on the 2–4s pad timer.
+   * Records boat-speed tier (step = floor(speed / PAD_SPEED_PER_TIER), +6 speed ≈ one ladder rung).
+   * Pool and timbre apply on the 2–4s pad tick, not immediately.
    */
   setBoatSpeed(speed: number): void {
-    this.padPendingPoolStep = Math.min(PAD_SPEED_STEP_MAX, Math.max(0, Math.floor(speed / 3)))
+    this.padPendingPoolStep = Math.min(
+      PAD_SPEED_STEP_MAX,
+      Math.max(0, Math.floor(speed / PAD_SPEED_PER_TIER))
+    )
   }
 
   update(dt: number): void {

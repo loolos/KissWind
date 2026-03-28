@@ -87,16 +87,21 @@ export function computeThrust(
 
 /**
  * Update physics state for one frame.
+ *
+ * `state.velX/Y` are velocity **relative to water**. Surface current
+ * `(currentX, currentY)` is added only for position integration (ground track).
  */
 export function updatePhysics(
   state: PhysicsState,
   thrustX: number,
   thrustY: number,
-  dt: number
+  dt: number,
+  currentX: number,
+  currentY: number
 ): PhysicsState {
   const speed = Math.sqrt(state.velX * state.velX + state.velY * state.velY)
 
-  // Water drag opposes current velocity vector.
+  // Water drag opposes velocity relative to water.
   const dragMag = K1 * speed + K2 * speed * speed
   let dragX = 0
   let dragY = 0
@@ -111,8 +116,8 @@ export function updatePhysics(
   const newVelX = state.velX + accX * dt
   const newVelY = state.velY + accY * dt
 
-  const newPosX = state.posX + newVelX * dt
-  const newPosY = state.posY + newVelY * dt
+  const newPosX = state.posX + (newVelX + currentX) * dt
+  const newPosY = state.posY + (newVelY + currentY) * dt
 
   return {
     posX: newPosX,
