@@ -12,8 +12,10 @@
 
 - **Drag** (mouse or touch) to set the sail angle.
 - **Wind** pushes the boat through thrust along your heading; **drag** slows you down, so speed builds and falls smoothly instead of snapping to a fixed “efficiency number.”
-- Watch the **wind indicator** and **sail feedback** (e.g. green / yellow / red) to stay near the **sweet spot** for stronger acceleration and a livelier wake; bad angles can leave you sluggish or stalled.
+- Watch the **wind indicator** and **sail feedback** (green / yellow / gray) to stay near the **sweet spot** for stronger acceleration and a livelier wake; bad angles can leave you sluggish.
+- A slow-changing **water current** also affects your ground track, so matching sail to wind is only part of high-speed runs.
 - The **camera stays on the boat** while the open sea scrolls beneath you—waves and occasional floating props help you feel motion and direction.
+- You can adjust map zoom during play (mouse wheel or touch pinch) to read nearby wind zones more easily.
 
 ## Game loop
 

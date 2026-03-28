@@ -87,7 +87,7 @@ Therefore:
 
 ---
 
-## 5. Layers (recommended split)
+## 5. Layers (current implementation split)
 
 | Layer        | Coordinate model | Notes |
 |-------------|------------------|--------|
@@ -95,10 +95,11 @@ Therefore:
 | **Boat / HUD** | Screen + angles | Boat sprite at center; HUD uses pixels. |
 | **Pure VFX** | Screen or UV     | Full-screen gradient, post-processing; may ignore world if they don’t represent map objects. |
 
-**Decorative waves** today are screen-wrapped streaks. Two consistent options:
+**Decorative waves and debris are currently world-space objects**:
 
-1. **World-space waves**: store `(worldX, worldY)`; update with wind as small world deltas; project with §3.1; wrap in a **world** window around the boat (large enough to cover the view).
-2. **Screen-space VFX**: keep as non-map eye candy; document that they are **not** `(worldX, worldY)` and must not affect gameplay.
+- Wave lines store `(worldX, worldY)` and drift using water-flow direction/speed.
+- Debris items store `(worldX, worldY)` and are wrapped in a world window around the boat.
+- Both are projected with `worldToScreen(...)` from `src/game/camera.ts`.
 
 ---
 
@@ -120,20 +121,14 @@ Gameplay logic (e.g. “inside zone if distance `< radius`”) should use **worl
 
 ---
 
-## 8. Migration Notes (from current implementation)
+## 8. Implementation Notes (as built)
 
-Roughly, the codebase today combines:
+Current code follows the boat-centered world transform directly:
 
-- Physics **`posX` / `posY`** (world).
-- **`World.offsetX` / `offsetY`** updated by `-boatVelocity * dt` (approximate negative integral of motion).
-- Wind zones drawn with `(zone.worldX + offsetX) * zoom` (mix of world + offset).
-- Debris / wave lines stored as **screen** coordinates updated by velocity (simulates parallax without world positions).
-
-**Target state**:
-
-- Remove reliance on **`offsetX` / `offsetY`** for projection; use **`boatX` / `boatY`** explicitly in §3.1.
-- Convert debris (and optionally waves) to **`(worldX, worldY)`** with wrap rules in world space, or clearly label them as screen VFX per §5.
-- Pass **`(boatX, boatY)`** into `World.update` / `World.draw` (or read from a shared `GameState`) so the transform is explicit.
+- `src/game/camera.ts` provides `worldToScreen` and `screenToWorld` exactly as in §3.
+- `GameScene` passes boat world coordinates to `World.update(...)`.
+- `World` draws wind zones, debris, and wave lines by projecting each world coordinate from boat space.
+- No independent `offsetX/offsetY` camera accumulator is used.
 
 ---
 
