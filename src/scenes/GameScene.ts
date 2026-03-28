@@ -538,16 +538,41 @@ export class GameScene extends Phaser.Scene {
   private getHudLayout(): { sailCy: number; sailScale: number } {
     const w = this.scale.width
     const h = this.scale.height
-    const compact = w < 480 || h < 760
-    const sailScale = compact ? 1.55 : 2
+    const compact = w < 520 || h < 860
+    const ultraCompact = w < 390 || h < 700
+    const sailScale = ultraCompact ? 1.28 : compact ? 1.45 : 2
     const dialRadius = 28 * sailScale
     const bgHalfHeight = dialRadius + 6 * sailScale
-    const safeBottom = this.HUD_BOTTOM_MARGIN
+    const safeBottom = this.getBottomSafePadding()
+    const timerBarAndGap = 8
     const sailCy = Math.max(
       h * 0.58,
-      h - safeBottom - bgHalfHeight
+      h - safeBottom - timerBarAndGap - bgHalfHeight
     )
     return { sailCy, sailScale }
+  }
+
+  /**
+   * Keep bottom HUD clear of mobile browser chrome/home indicator.
+   * visualViewport delta captures dynamic bars on iOS/Android browsers.
+   */
+  private getBottomSafePadding(): number {
+    const w = this.scale.width
+    const h = this.scale.height
+    const compact = w < 520 || h < 860
+    const ultraCompact = w < 390 || h < 700
+    let padding = this.HUD_BOTTOM_MARGIN
+    if (compact) padding += 10
+    if (ultraCompact) padding += 8
+
+    if (typeof window !== 'undefined') {
+      const vv = window.visualViewport
+      if (vv) {
+        const browserUiInset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
+        padding += Phaser.Math.Clamp(browserUiInset, 0, 60)
+      }
+    }
+    return padding
   }
 
   private drawWindCompass(
