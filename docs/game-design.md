@@ -16,6 +16,10 @@ This document describes the **as-built** gameplay, physics, wind model, visuals,
 ## 2. Player input
 
 - **Sail trim:** Click/touch and drag relative to the screen center. The sail angle updates by the **angular delta** between pointer-down and current pointer (same as rotating a control around the boat).
+- **Map zoom controls:**  
+  - Mouse wheel: scroll up/down to zoom in/out.  
+  - Touch: two-finger pinch to zoom.  
+  - UI buttons (`-` / `+`) at top-left also step through discrete zoom levels.
 - **Boat heading:** Not directly steered by the player. The boat’s **motion direction** follows **velocity** (see Physics).
 
 ---
@@ -64,12 +68,14 @@ There is **no hard speed cap**: speed is limited by **drag balancing thrust**, n
 ### 4.5 Integration
 
 - `acc = thrust + drag` (component-wise).
-- `v += acc * dt`, `pos += v * dt`.
+- `v += acc * dt`.
+- Ground-track integration adds water current:  
+  `pos += (v + current) * dt`.
 
 ### 4.6 Display heading vs speed
 
-- **Heading** used for drawing the boat is **`atan2(velY, velX)`** when speed is non-zero.
-- **Speed** shown in HUD is `|v|`.
+- **Heading** used for drawing the boat is **`atan2(groundVelY, groundVelX)`** when ground speed is non-zero, where `groundVel = v + current`.
+- **Speed** shown in HUD is **ground speed** `|v + current|`.
 
 ---
 
@@ -87,12 +93,13 @@ There is **no hard speed cap**: speed is limited by **drag balancing thrust**, n
 - **Gust:** `multiplier = 3.0` (stronger local effective wind vs global `strength`).
 - **Dead (“weak wind”):** `multiplier = 0.3` (weaker local effective wind).
 - Spawning is **random** around a reference point (usually the boat); distance and radius are scaled by **`MAP_ZOOM_BASE`** (see `mapConfig.ts`, `MAP_ZOOM_BASE = 20`).
-- Zones far from the boat are removed; the system tries to keep **2–5** active zones.
+- At startup the game spawns **8** zones; during play it replenishes toward **up to 16 active** zones (`SPAWN_PER_TICK = 4`).
+- Zones far from the boat are removed using a zoom-scaled keep distance.
 
 ### 5.3 Effective strength at a point
 
 - Start from global `strength`.
-- For each zone whose circle contains the point, **linearly blend** toward `strength × zone.multiplier` from edge to center (`blend = 1 - dist/radius`).
+- For each zone whose circle contains the point, blend toward `strength × zone.multiplier` using a **smoothstep radial influence** (0 at edge, 1 at center).
 - Zones are applied **sequentially** (overlaps compound).
 - Result is floored with `Math.max(0.1, s)`.
 
@@ -100,13 +107,30 @@ This value is **`getStrengthAt(boatX, boatY)`** fed into `computeThrust`.
 
 ---
 
-## 6. World rendering (`World.ts`)
+## 6. Water current (`WaterCurrent.ts`)
 
-- Draws **ocean background**, **wave lines**, **debris**, and **wind zones** (gust vs dead styling) using the boat-centered projection and `MAP_ZOOM_BASE`.
+- Separate from wind, the sea has a global **surface current** with drifting:
+  - **Direction drift multiplier:** `DIRECTION_DRIFT_MULT = 0.14`
+  - **Speed band:** roughly `1.1` to `4.2` world units/s around `BASE_SPEED = 2.4`
+- Current velocity is:
+  - `currentX = cos(direction) * speed`
+  - `currentY = sin(direction) * speed`
+- Current contributes to:
+  - physics position integration (ground track),
+  - HUD compass aqua arrow (length scales with current speed),
+  - world wave contour orientation/drift.
 
 ---
 
-## 7. Boat visuals (`Boat.ts`)
+## 7. World rendering (`World.ts`)
+
+- Draws **ocean background**, **wave lines**, **debris**, and **wind zones** (gust vs dead styling) using the boat-centered projection and `MAP_ZOOM_BASE`.
+- Decorative wave lines and debris are stored in **world coordinates** and wrapped around the boat-centered viewport.
+- Additional long swell contours are drawn perpendicular to current flow for large-scale motion cues.
+
+---
+
+## 8. Boat visuals (`Boat.ts`)
 
 - **Scale:** `BOAT_VIS_SCALE = 2.1` (visual scale for hull, sails, strokes, wake).
 - **Hull:** elongated plan shape; dark blue hull + cream inner deck; **pseudo-3D** projection with **`CAMERA_ELEV = 30°`** (π/6) to foreshorten the deck and lift mast/sail tips.
@@ -115,32 +139,34 @@ This value is **`getStrengthAt(boatX, boatY)`** fed into `computeThrust`.
 
 ---
 
-## 8. HUD and UI (`GameScene.ts`)
+## 9. HUD and UI (`GameScene.ts`)
 
 - **Timer:** countdown from 180 s; bottom bar shows remaining fraction.
 - **Distance:** accumulated path length in world units × `METERS_PER_UNIT` (2) for display.
-- **Speed text:** scalar speed `|v|`.
-- **Acceleration text:** time derivative of **speed** (scalar), used as a simple feedback number.
-- **Wind compass (top center):** wind direction arrow, wind strength label, boat **velocity** direction arrow.
-- **Speed bar (left):** fills relative to **`HUD_SPEED_BAR_REF`** (currently **20**) — **display only** (not a physics cap).
-- **Sail hint gauge (bottom center):** enlarged arc showing green/yellow optimal bands vs wind; colored dot = sail quality; **small white dot on arc = wind direction** (not boat velocity).
+- **Speed text:** scalar **ground speed** `|v + current|`, shown in the center of the sail dial.
+- **Acceleration text:** time derivative of ground speed (scalar).
+- **Wind/current/heading compass (top center):**
+  - white arrow = wind direction,
+  - aqua arrow = water current direction and relative strength,
+  - blue arrow = boat ground-velocity heading.
+- **Sail hint gauge (bottom center):** arc showing green/yellow optimal bands vs wind, colored quality dot (green/yellow/gray), white wind marker, and inner speed sector using `HUD_SPEED_BAR_REF` only as a visual reference.
 
 ---
 
-## 9. Boot / title (`BootScene.ts`)
+## 10. Boot / title (`BootScene.ts`)
 
 - Title screen with animated waves and a **Set Sail** button starting `GameScene`.
 - Instruction text mentions **180 seconds** and basic drag-to-trim.
 
 ---
 
-## 10. End of run
+## 11. End of run
 
 - When time runs out, a **game over** overlay shows total distance and a rating tier based on meters; **Sail Again** restarts the scene.
 
 ---
 
-## 11. File map (core)
+## 12. File map (core)
 
 | Area | Main files |
 |------|------------|
@@ -148,13 +174,16 @@ This value is **`getStrengthAt(boatX, boatY)`** fed into `computeThrust`.
 | Wind | `src/game/Wind.ts` |
 | Map scale | `src/game/mapConfig.ts` |
 | World draw | `src/game/World.ts`, `src/game/camera.ts` |
+| Water current | `src/game/WaterCurrent.ts` |
 | Boat art | `src/game/Boat.ts` |
 | Gameplay scene | `src/scenes/GameScene.ts` |
 | Title | `src/scenes/BootScene.ts` |
+| Ambient audio | `src/game/AmbientMusic.ts` |
 
 ---
 
-## 12. Design notes
+## 13. Design notes
 
-- The model is **arcade-style**, not a full hydrodynamics simulation: sail force is aligned with the **sail normal**, drag opposes **velocity**, and **no rudder** is modeled.
-- **Balance** is controlled mainly by `K1`, `K2`, the thrust `× 3` gain, `Wind` strength/zones, and `BASE_WIND`.
+- The model is **arcade-style**, not a full hydrodynamics simulation: sail force is aligned with the **sail normal**, drag opposes **velocity relative to water**, and **no rudder** is modeled.
+- Ground motion is intentionally separated into **boat-through-water velocity** + **water current**.
+- **Balance** is controlled mainly by `K1`, `K2`, the thrust `× 3` gain, wind strength/zones, and current drift parameters.
