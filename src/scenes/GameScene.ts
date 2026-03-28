@@ -61,6 +61,8 @@ export class GameScene extends Phaser.Scene {
   private zoomPlusGfx!: Phaser.GameObjects.Graphics
   private zoomMinusZone!: Phaser.GameObjects.Zone
   private zoomPlusZone!: Phaser.GameObjects.Zone
+  private zoomMinusLabel!: Phaser.GameObjects.Text
+  private zoomPlusLabel!: Phaser.GameObjects.Text
 
   private ambient!: AmbientMusic
 
@@ -71,6 +73,8 @@ export class GameScene extends Phaser.Scene {
   private readonly HUD_SPEED_BAR_REF = 20
   /** Top compass: current arrow reaches ~full radius at this |current| (world units/s). */
   private readonly HUD_CURRENT_SPEED_REF = 5
+  /** Extra bottom margin so mobile browser bars/home indicator do not cover HUD. */
+  private readonly HUD_BOTTOM_MARGIN = 14
 
   constructor() {
     super({ key: 'GameScene' })
@@ -133,7 +137,7 @@ export class GameScene extends Phaser.Scene {
 
   private createHUD(): void {
     const w = this.scale.width
-    const h = this.scale.height
+    const { sailCy } = this.getHudLayout()
     const fontSize = Math.max(14, Math.min(24, w * 0.04))
 
     // Timer (top-left; offset past map zoom buttons)
@@ -158,7 +162,7 @@ export class GameScene extends Phaser.Scene {
     this.scoreText.setDepth(25)
 
     // Boat speed readout (center of bottom sail trim dial)
-    this.speedGaugeText = this.add.text(w / 2, h - 110, '0.0', {
+    this.speedGaugeText = this.add.text(w / 2, sailCy, '0.0', {
       fontSize: Math.max(14, Math.min(22, w * 0.038)) + 'px',
       fontFamily: 'Georgia, serif',
       color: '#e8f4ff',
@@ -192,8 +196,9 @@ export class GameScene extends Phaser.Scene {
 
   /** Upper-left map zoom: − = zoom out (smaller coefficient), + = zoom in. */
   private createZoomControls(): void {
-    const btnW = 40
-    const btnH = 30
+    const w = this.scale.width
+    const btnW = Math.round(Phaser.Math.Clamp(w * 0.11, 34, 44))
+    const btnH = Math.round(Phaser.Math.Clamp(btnW * 0.74, 24, 32))
     const gap = 6
     const x0 = 12
     const y0 = 12
@@ -219,9 +224,9 @@ export class GameScene extends Phaser.Scene {
     ): { g: Phaser.GameObjects.Graphics; z: Phaser.GameObjects.Zone } => {
       const g = this.add.graphics().setDepth(26)
       drawBtn(g, x, y0, false)
-      this.add
+      const labelObj = this.add
         .text(x + btnW / 2, y0 + btnH / 2, label, {
-          fontSize: '20px',
+          fontSize: `${Math.round(btnH * 0.62)}px`,
           fontFamily: 'Arial, sans-serif',
           color: '#ffffff',
         })
@@ -237,6 +242,11 @@ export class GameScene extends Phaser.Scene {
         pointer.event.stopPropagation()
         this.stepMapZoom(deltaIndex)
       })
+      if (label === '-') {
+        this.zoomMinusLabel = labelObj
+      } else {
+        this.zoomPlusLabel = labelObj
+      }
       return { g, z }
     }
 
@@ -294,7 +304,11 @@ export class GameScene extends Phaser.Scene {
 
   /** Touch pointers currently down (excludes mouse). */
   private activeTouchPointers(): Phaser.Input.Pointer[] {
-    return this.input.manager.pointers.filter((p) => p.active && p.isDown && p.wasTouch)
+    return this.input.manager.pointers.filter((p) => {
+      if (!p.active || !p.isDown) return false
+      const pointerType = (p as Phaser.Input.Pointer & { pointerType?: string }).pointerType
+      return pointerType === 'touch' || p.wasTouch || p.id > 0
+    })
   }
 
   private touchPinchDistance(): number {
@@ -311,16 +325,16 @@ export class GameScene extends Phaser.Scene {
       return
     }
     const dist = this.touchPinchDistance()
-    if (dist < 24) return
+    if (dist < 20) return
     if (this.pinchBaseDist <= 0) {
       this.pinchBaseDist = dist
       return
     }
     const ratio = dist / this.pinchBaseDist
-    if (ratio > 1.12) {
+    if (ratio > 1.08) {
       this.stepMapZoom(-1)
       this.pinchBaseDist = dist
-    } else if (ratio < 0.88) {
+    } else if (ratio < 0.92) {
       this.stepMapZoom(1)
       this.pinchBaseDist = dist
     }
@@ -457,6 +471,7 @@ export class GameScene extends Phaser.Scene {
   private updateHUD(): void {
     const w = this.scale.width
     const h = this.scale.height
+    const { sailCy } = this.getHudLayout()
 
     // Timer text with color warning
     const t = this.timeLeft
@@ -499,7 +514,6 @@ export class GameScene extends Phaser.Scene {
     this.windText.setText(`WIND ${this.currentWindStrength.toFixed(2)}`)
 
     const sailCx = w / 2
-    const sailCy = h - 110
     const speedFracHud = Math.min(1, this.currentSpeed / this.HUD_SPEED_BAR_REF)
     const digColor =
       speedFracHud > 0.7 ? '#66ffaa' : speedFracHud > 0.4 ? '#88d4ff' : '#c8e8ff'
@@ -519,6 +533,21 @@ export class GameScene extends Phaser.Scene {
 
     // Sail angle hint arc (bottom-center); speed shown as central pie sector inside same dial
     this.drawSailHint(sailCx, sailCy)
+  }
+
+  private getHudLayout(): { sailCy: number; sailScale: number } {
+    const w = this.scale.width
+    const h = this.scale.height
+    const compact = w < 480 || h < 760
+    const sailScale = compact ? 1.55 : 2
+    const dialRadius = 28 * sailScale
+    const bgHalfHeight = dialRadius + 6 * sailScale
+    const safeBottom = this.HUD_BOTTOM_MARGIN
+    const sailCy = Math.max(
+      h * 0.58,
+      h - safeBottom - bgHalfHeight
+    )
+    return { sailCy, sailScale }
   }
 
   private drawWindCompass(
@@ -623,7 +652,7 @@ export class GameScene extends Phaser.Scene {
 
   private drawSailHint(cx: number, cy: number): void {
     const g = this.hudGraphics
-    const scale = 2
+    const { sailScale: scale } = this.getHudLayout()
     const r = 28 * scale
 
     // Background
@@ -847,7 +876,7 @@ export class GameScene extends Phaser.Scene {
 
   private onResize(): void {
     const w = this.scale.width
-    const h = this.scale.height
+    const { sailCy } = this.getHudLayout()
 
     // Reposition HUD elements
     if (this.scoreText) {
@@ -857,7 +886,16 @@ export class GameScene extends Phaser.Scene {
       this.windText.setPosition(w / 2, 82)
     }
     if (this.speedGaugeText) {
-      this.speedGaugeText.setPosition(w / 2, h - 110)
+      this.speedGaugeText.setPosition(w / 2, sailCy)
+    }
+    if (this.zoomMinusZone && this.zoomPlusZone) {
+      this.zoomMinusZone.destroy()
+      this.zoomPlusZone.destroy()
+      this.zoomMinusGfx.destroy()
+      this.zoomPlusGfx.destroy()
+      this.zoomMinusLabel.destroy()
+      this.zoomPlusLabel.destroy()
+      this.createZoomControls()
     }
 
     if (this.world) {
