@@ -73,28 +73,37 @@ export class BootScene extends Phaser.Scene {
       strokeThickness: 3,
     }).setOrigin(0.5).setDepth(5)
 
-    this.drawHudLegend(w, h)
-
-    const instrSize = Math.min(w * 0.03, 16)
-    this.add.text(
-      w / 2, h * 0.80,
-      'Drag to rotate the sail\nFind the sweet spot for maximum speed\n180 seconds to sail as far as possible',
-      {
-        fontSize: instrSize + 'px',
-        fontFamily: 'Arial, sans-serif',
-        color: '#88ccee',
-        align: 'center',
-      }
-    ).setOrigin(0.5).setDepth(5)
-
     this.btnW = Math.min(w * 0.45, 220)
     this.btnH = 55
     this.btnX = w / 2 - this.btnW / 2
-    this.btnY = h * 0.87 - this.btnH / 2
+
+    const panelLayout = this.getHudLegendLayout(w, h)
+    const instrSize = Math.min(w * 0.03, 16)
+    const instrText = 'Drag to rotate the sail\nFind the sweet spot for maximum speed\n180 seconds to sail as far as possible'
+    const instrLineHeight = instrSize * 1.35
+    const instrBlockH = instrLineHeight * 3
+    const bottomSafeY = h - Math.max(26, h * 0.035)
+    const neededBottom = panelLayout.y + panelLayout.h + 16 + instrBlockH + 18 + this.btnH
+    const layoutShift = Math.max(0, neededBottom - bottomSafeY)
+    const panelY = Math.max(h * 0.44, panelLayout.y - layoutShift)
+
+    this.drawHudLegend(w, h, panelY, panelLayout.w, panelLayout.h)
+
+    const instrY = panelY + panelLayout.h + 16 + instrBlockH / 2
+    this.add.text(w / 2, instrY, instrText, {
+      fontSize: instrSize + 'px',
+      fontFamily: 'Arial, sans-serif',
+      color: '#88ccee',
+      align: 'center',
+      lineSpacing: instrSize * 0.35,
+    }).setOrigin(0.5).setDepth(5)
+
+    const btnCenterY = instrY + instrBlockH / 2 + 18 + this.btnH / 2
+    this.btnY = btnCenterY - this.btnH / 2
 
     this.drawButton(false)
 
-    this.add.text(w / 2, h * 0.87, 'SET SAIL!', {
+    this.add.text(w / 2, btnCenterY, 'SET SAIL!', {
       fontSize: Math.min(w * 0.05, 26) + 'px',
       fontFamily: 'Georgia, serif',
       color: '#ffffff',
@@ -103,7 +112,7 @@ export class BootScene extends Phaser.Scene {
     }).setOrigin(0.5).setDepth(6)
 
     const btnZone = this.add
-      .zone(w / 2, h * 0.87, this.btnW + 20, this.btnH + 20)
+      .zone(w / 2, btnCenterY, this.btnW + 20, this.btnH + 20)
       .setInteractive()
       .setDepth(7)
 
@@ -184,11 +193,15 @@ export class BootScene extends Phaser.Scene {
     this.btnBg.strokeRoundedRect(this.btnX, this.btnY, this.btnW, this.btnH, 10)
   }
 
-  private drawHudLegend(w: number, h: number): void {
+  private getHudLegendLayout(w: number, h: number): { w: number; h: number; y: number } {
     const panelW = Math.min(w * 0.92, 560)
-    const panelH = Math.min(h * 0.24, 220)
+    const panelH = Math.min(h * 0.22, 205)
+    const panelY = h * 0.56
+    return { w: panelW, h: panelH, y: panelY }
+  }
+
+  private drawHudLegend(w: number, _h: number, panelY: number, panelW: number, panelH: number): void {
     const panelX = (w - panelW) / 2
-    const panelY = h * 0.57
 
     const panelG = this.add.graphics().setDepth(5)
     panelG.fillStyle(0x001933, 0.62)
