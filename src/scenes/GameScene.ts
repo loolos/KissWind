@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import { Boat } from '../game/Boat'
 import { Wind } from '../game/Wind'
 import { World } from '../game/World'
+import { FIXED_ROUTE_MAP, getFixedMapBounds, type FixedMapBounds } from '../game/fixedMap'
 import {
   PhysicsState,
   ThrustResult,
@@ -15,8 +16,6 @@ import {
 import { MAP_ZOOM_LEVELS } from '../game/mapConfig'
 import { AmbientMusic } from '../game/AmbientMusic'
 import { WaterCurrent } from '../game/WaterCurrent'
-
-const GAME_DURATION = 180  // seconds
 
 export class GameScene extends Phaser.Scene {
   // Core systems
@@ -42,16 +41,27 @@ export class GameScene extends Phaser.Scene {
   private speedGaugeText!: Phaser.GameObjects.Text
   private accelText!: Phaser.GameObjects.Text
   private windText!: Phaser.GameObjects.Text
+  private miniMapTitleText!: Phaser.GameObjects.Text
+
+  // Fixed route map
+  private readonly routeMap = FIXED_ROUTE_MAP
+  private readonly routeMapBounds: FixedMapBounds = getFixedMapBounds(FIXED_ROUTE_MAP, 56)
+  private routeDistance: number = 1
+  private distanceToFinish: number = 0
 
   // Game state
-  private timeLeft: number = GAME_DURATION
-  private totalDistance: number = 0
+  private elapsedRaceSec: number = 0
+  private bestTimeSec: number | null = null
   private gameOver: boolean = false
-  private gameOverContainer!: Phaser.GameObjects.Container
-  private currentWindStrength: number = 1.0
-  private currentAcceleration: number = 0
+  private reachedFinish: boolean = false
+  private finalTimeSec: number = 0
+  private isNewRecord: boolean = false
+  private currentWindStrength: number = 1
+  private currentWindDirection: number = 0
   private currentSpeed: number = 0
   private currentHeading: number = 0
+  private currentAcceleration: number = 0
+  private totalDistance: number = 0
 
   /** Index into MAP_ZOOM_LEVELS; 0 = 20 (default). */
   private mapZoomIndex: number = 0
@@ -66,8 +76,9 @@ export class GameScene extends Phaser.Scene {
 
   private ambient!: AmbientMusic
 
-  // Scoring: accumulated distance in game-units (convert to "meters" for display)
-  private METERS_PER_UNIT = 2
+  // Display conversion for HUD text
+  private readonly METERS_PER_UNIT = 2
+  private readonly BEST_TIME_STORAGE_KEY = `kisswind-best-time-${this.routeMap.id}`
 
   /** HUD speed bar full scale only (not a physics cap). */
   private readonly HUD_SPEED_BAR_REF = 20
@@ -84,42 +95,59 @@ export class GameScene extends Phaser.Scene {
     const w = this.scale.width
     const h = this.scale.height
 
-    // Reset game state (scene.restart() reuses the instance, so class fields keep old values)
+    // Reset game state (scene.restart() reuses the instance)
     this.gameOver = false
-    this.timeLeft = GAME_DURATION
+    this.reachedFinish = false
+    this.finalTimeSec = 0
+    this.isNewRecord = false
+    this.elapsedRaceSec = 0
     this.totalDistance = 0
+    this.distanceToFinish = 0
     this.isDragging = false
     this.mapZoomIndex = 0
     this.pinchBaseDist = 0
 
+    // Route metrics
+    const sx = this.routeMap.start.worldX
+    const sy = this.routeMap.start.worldY
+    const fx = this.routeMap.finish.worldX
+    const fy = this.routeMap.finish.worldY
+    this.routeDistance = Math.max(1, Phaser.Math.Distance.Between(sx, sy, fx, fy))
+    this.distanceToFinish = this.routeDistance
+    this.bestTimeSec = this.loadBestTime()
+
     // Initialize systems
-    this.wind = new Wind()
+    this.wind = new Wind(this.routeMap)
     this.waterCurrent = new WaterCurrent()
     this.world = new World(this)
     this.boat = new Boat(this)
 
     this.physState = {
-      posX: 0,
-      posY: 0,
+      posX: sx,
+      posY: sy,
       velX: 0,
       velY: 0,
       accX: 0,
       accY: 0,
     }
+
+    const initialWind = this.wind.getWindAt(sx, sy)
+    this.currentWindDirection = initialWind.direction
+    this.currentWindStrength = initialWind.strength
     this.currentSpeed = 0
-    this.currentHeading = this.wind.direction
+    this.currentHeading = this.currentWindDirection
+    this.currentAcceleration = 0
 
     this.lastThrust = { thrustX: 0, thrustY: 0, thrustMag: 0, quality: 'yellow', multiplier: 1.0 }
 
-    // Initial sail angle: slightly off the wind for a good start
-    this.boat.sailAngle = this.wind.direction + Math.PI * 0.6
+    // Initial sail angle: slightly off local wind
+    this.boat.sailAngle = this.currentWindDirection + Math.PI * 0.6
 
-    this.wind.spawnInitialZones(w, h, 0, 0, this.currentHeading)
+    this.wind.spawnInitialZones(w, h, sx, sy, this.currentHeading)
 
     // HUD layer
     this.hudGraphics = this.add.graphics()
     this.hudGraphics.setDepth(20)
-
     this.createHUD()
     this.createZoomControls()
     this.applyMapZoom()
@@ -127,9 +155,7 @@ export class GameScene extends Phaser.Scene {
 
     this.ambient = new AmbientMusic()
     this.ambient.start()
-    this.input.once('pointerdown', () => {
-      this.ambient.resume()
-    })
+    this.input.once('pointerdown', () => this.ambient.resume())
 
     // Handle resize
     this.scale.on('resize', this.onResize, this)
@@ -140,9 +166,8 @@ export class GameScene extends Phaser.Scene {
     const { sailCy } = this.getHudLayout()
     const fontSize = Math.max(14, Math.min(24, w * 0.04))
 
-    // Timer (top-left; offset past map zoom buttons)
-    this.timerText = this.add.text(108, 16, `TIME: ${GAME_DURATION}`, {
-      fontSize: fontSize + 'px',
+    this.timerText = this.add.text(108, 16, 'TIME: 0.0s', {
+      fontSize: `${fontSize}px`,
       fontFamily: 'Georgia, serif',
       color: '#ffffff',
       stroke: '#000033',
@@ -150,9 +175,8 @@ export class GameScene extends Phaser.Scene {
     })
     this.timerText.setDepth(25)
 
-    // Score (top-right)
-    this.scoreText = this.add.text(w - 16, 16, 'DIST: 0m', {
-      fontSize: fontSize + 'px',
+    this.scoreText = this.add.text(w - 16, 16, 'TO GO: 0m', {
+      fontSize: `${fontSize}px`,
       fontFamily: 'Georgia, serif',
       color: '#ffffff',
       stroke: '#000033',
@@ -161,9 +185,8 @@ export class GameScene extends Phaser.Scene {
     this.scoreText.setOrigin(1, 0)
     this.scoreText.setDepth(25)
 
-    // Boat speed readout (center of bottom sail trim dial)
     this.speedGaugeText = this.add.text(w / 2, sailCy, '0.0', {
-      fontSize: Math.max(14, Math.min(22, w * 0.038)) + 'px',
+      fontSize: `${Math.max(14, Math.min(22, w * 0.038))}px`,
       fontFamily: 'Georgia, serif',
       color: '#e8f4ff',
       stroke: '#001122',
@@ -172,9 +195,8 @@ export class GameScene extends Phaser.Scene {
     this.speedGaugeText.setOrigin(0.5)
     this.speedGaugeText.setDepth(25)
 
-    // Acceleration indicator text (below timer)
-    this.accelText = this.add.text(108, 16 + fontSize + 8, 'ACC: 0.00', {
-      fontSize: Math.floor(fontSize * 0.8) + 'px',
+    this.accelText = this.add.text(108, 16 + fontSize + 8, 'BEST: --', {
+      fontSize: `${Math.floor(fontSize * 0.8)}px`,
       fontFamily: 'Arial, sans-serif',
       color: '#aaddff',
       stroke: '#000033',
@@ -182,9 +204,8 @@ export class GameScene extends Phaser.Scene {
     })
     this.accelText.setDepth(25)
 
-    // Wind instrument label/value (top-center, below compass)
     this.windText = this.add.text(w / 2, 82, 'WIND 1.0', {
-      fontSize: Math.floor(fontSize * 0.72) + 'px',
+      fontSize: `${Math.floor(fontSize * 0.72)}px`,
       fontFamily: 'Arial, sans-serif',
       color: '#e8f4ff',
       stroke: '#000033',
@@ -192,6 +213,15 @@ export class GameScene extends Phaser.Scene {
     })
     this.windText.setOrigin(0.5, 0)
     this.windText.setDepth(25)
+
+    this.miniMapTitleText = this.add.text(0, 0, 'ROUTE MAP', {
+      fontSize: `${Math.max(10, Math.min(16, w * 0.028))}px`,
+      fontFamily: 'Arial, sans-serif',
+      color: '#d8eeff',
+      stroke: '#001122',
+      strokeThickness: 3,
+    })
+    this.miniMapTitleText.setDepth(25)
   }
 
   /** Upper-left map zoom: − = zoom out (smaller coefficient), + = zoom in. */
@@ -242,11 +272,8 @@ export class GameScene extends Phaser.Scene {
         pointer.event.stopPropagation()
         this.stepMapZoom(deltaIndex)
       })
-      if (label === '-') {
-        this.zoomMinusLabel = labelObj
-      } else {
-        this.zoomPlusLabel = labelObj
-      }
+      if (label === '-') this.zoomMinusLabel = labelObj
+      else this.zoomPlusLabel = labelObj
       return { g, z }
     }
 
@@ -298,11 +325,9 @@ export class GameScene extends Phaser.Scene {
   ): void {
     if (this.gameOver) return
     if (deltaY === 0) return
-    // Scroll down (deltaY > 0) → zoom out (larger map index); scroll up → zoom in.
     this.stepMapZoom(deltaY > 0 ? 1 : -1)
   }
 
-  /** Touch pointers currently down (excludes mouse). */
   private activeTouchPointers(): Phaser.Input.Pointer[] {
     return this.input.manager.pointers.filter((p) => {
       if (!p.active || !p.isDown) return false
@@ -365,40 +390,26 @@ export class GameScene extends Phaser.Scene {
 
     const cx = this.scale.width / 2
     const cy = this.scale.height / 2
-
-    // Angle from boat center to current pointer
     const currentAngle = Math.atan2(pointer.y - cy, pointer.x - cx)
     const startAngle = Math.atan2(this.dragStartY - cy, this.dragStartX - cx)
-
-    // Delta angle
     const deltaAngle = normalizeAngle(currentAngle - startAngle)
     this.boat.sailAngle = this.sailAngleAtDragStart + deltaAngle
   }
 
   private onPointerUp(_pointer: Phaser.Input.Pointer): void {
     this.isDragging = false
-    if (this.activeTouchPointers().length < 2) {
-      this.pinchBaseDist = 0
-    }
+    if (this.activeTouchPointers().length < 2) this.pinchBaseDist = 0
   }
 
-  update(time: number, delta: number): void {
-    const dt = Math.min(delta / 1000, 0.05)  // cap at 50ms
+  update(_time: number, delta: number): void {
+    const dt = Math.min(delta / 1000, 0.05)
 
     this.ambient.setBoatSpeed(this.currentSpeed)
     this.ambient.update(dt)
-
     if (this.gameOver) return
 
-    // Update timer
-    this.timeLeft -= dt
-    if (this.timeLeft <= 0) {
-      this.timeLeft = 0
-      this.showGameOver()
-      return
-    }
+    this.elapsedRaceSec += dt
 
-    // Update wind
     this.wind.update(
       dt,
       this.physState.posX,
@@ -412,22 +423,21 @@ export class GameScene extends Phaser.Scene {
     const curX = this.waterCurrent.velX
     const curY = this.waterCurrent.velY
 
-    // Get effective wind strength at boat position
-    const effectiveStrength = this.wind.getStrengthAt(this.physState.posX, this.physState.posY)
-    this.currentWindStrength = effectiveStrength
+    const localWind = this.wind.getWindAt(this.physState.posX, this.physState.posY)
+    this.currentWindDirection = localWind.direction
+    this.currentWindStrength = localWind.strength
 
-    // Compute thrust
     this.lastThrust = computeThrust(
       this.boat.sailAngle,
-      this.wind.direction,
-      effectiveStrength
+      this.currentWindDirection,
+      this.currentWindStrength
     )
 
-    // Update physics (vel = motion relative to water; current adds to ground track)
     const prevPos = { x: this.physState.posX, y: this.physState.posY }
     const prevGx = this.physState.velX + curX
     const prevGy = this.physState.velY + curY
     const prevGroundSpeed = Math.sqrt(prevGx * prevGx + prevGy * prevGy)
+
     this.physState = updatePhysics(
       this.physState,
       this.lastThrust.thrustX,
@@ -436,36 +446,48 @@ export class GameScene extends Phaser.Scene {
       curX,
       curY
     )
+
     const gx = this.physState.velX + curX
     const gy = this.physState.velY + curY
     this.currentSpeed = Math.sqrt(gx * gx + gy * gy)
-    if (this.currentSpeed > 1e-6) {
-      this.currentHeading = Math.atan2(gy, gx)
-    }
+    if (this.currentSpeed > 1e-6) this.currentHeading = Math.atan2(gy, gx)
     this.currentAcceleration = dt > 0 ? (this.currentSpeed - prevGroundSpeed) / dt : 0
 
-    // Accumulate distance
     const dx = this.physState.posX - prevPos.x
     const dy = this.physState.posY - prevPos.y
     this.totalDistance += Math.sqrt(dx * dx + dy * dy)
 
-    // Update boat visual
-    this.boat.update(dt, this.currentHeading, this.currentSpeed, this.lastThrust.quality, this.world.mapZoom)
+    this.distanceToFinish = Phaser.Math.Distance.Between(
+      this.physState.posX,
+      this.physState.posY,
+      this.routeMap.finish.worldX,
+      this.routeMap.finish.worldY
+    )
 
-    // World map: all entities use world coords; boat-centered projection in World
+    this.boat.update(
+      dt,
+      this.currentHeading,
+      this.currentSpeed,
+      this.lastThrust.quality,
+      this.world.mapZoom
+    )
+
     this.world.update(
       dt,
       this.physState.posX,
       this.physState.posY,
-      this.wind.direction,
-      effectiveStrength,
+      this.currentWindDirection,
+      this.currentWindStrength,
       this.wind.zones,
       this.waterCurrent.direction,
       this.waterCurrent.speed
     )
 
-    // Update HUD
     this.updateHUD()
+
+    if (this.distanceToFinish <= this.routeMap.finish.radius) {
+      this.completeVoyage()
+    }
   }
 
   private updateHUD(): void {
@@ -473,23 +495,18 @@ export class GameScene extends Phaser.Scene {
     const h = this.scale.height
     const { sailCy } = this.getHudLayout()
 
-    // Timer text with color warning
-    const t = this.timeLeft
-    const timerColor = t > 20 ? '#ffffff' : t > 10 ? '#ffdd44' : '#ff4444'
-    this.timerText.setColor(timerColor)
-    this.timerText.setText(`TIME: ${Math.ceil(t)}`)
+    this.timerText.setColor('#ffffff')
+    this.timerText.setText(`TIME: ${this.elapsedRaceSec.toFixed(1)}s`)
 
-    // Score
-    const meters = Math.floor(this.totalDistance * this.METERS_PER_UNIT)
-    this.scoreText.setText(`${meters}m`)
+    const toGoM = Math.max(0, Math.floor(this.distanceToFinish * this.METERS_PER_UNIT))
+    this.scoreText.setText(`TO GO: ${toGoM}m`)
 
-    // Acceleration (specific value applied to boat speed each second)
-    const accelColor =
-      this.currentAcceleration > 0.05 ? '#44ff88' : this.currentAcceleration < -0.05 ? '#ff6644' : '#aaddff'
-    this.accelText.setColor(accelColor)
-    this.accelText.setText(`ACC: ${this.currentAcceleration.toFixed(2)}`)
+    const bestText = this.bestTimeSec === null ? 'BEST: --' : `BEST: ${this.bestTimeSec.toFixed(1)}s`
+    const bestColor =
+      this.bestTimeSec !== null && this.elapsedRaceSec < this.bestTimeSec ? '#66ffaa' : '#aaddff'
+    this.accelText.setColor(bestColor)
+    this.accelText.setText(bestText)
 
-    // Draw HUD graphics
     this.hudGraphics.clear()
 
     // Background panels
@@ -497,44 +514,43 @@ export class GameScene extends Phaser.Scene {
     const hudFs = Math.max(14, Math.min(24, w * 0.04))
     const leftPanelH = 16 + hudFs + 8 + Math.floor(hudFs * 0.8) + 12
     this.hudGraphics.fillStyle(0x000022, panelAlpha)
-    this.hudGraphics.fillRoundedRect(8, 8, 220, leftPanelH, 8)
+    this.hudGraphics.fillRoundedRect(8, 8, 240, leftPanelH, 8)
 
     this.hudGraphics.fillStyle(0x000022, panelAlpha)
-    this.hudGraphics.fillRoundedRect(w - 120, 8, 112, 36, 8)
+    this.hudGraphics.fillRoundedRect(w - 186, 8, 178, 42, 8)
 
-    // Wind + heading compass (top-center); aqua arrow = water current (length ∝ speed)
     this.drawWindCompass(
       w / 2,
       44,
-      this.wind.direction,
+      this.currentWindDirection,
       this.currentHeading,
       this.waterCurrent.direction,
       this.waterCurrent.speed
     )
     this.windText.setText(`WIND ${this.currentWindStrength.toFixed(2)}`)
 
-    const sailCx = w / 2
     const speedFracHud = Math.min(1, this.currentSpeed / this.HUD_SPEED_BAR_REF)
-    const digColor =
-      speedFracHud > 0.7 ? '#66ffaa' : speedFracHud > 0.4 ? '#88d4ff' : '#c8e8ff'
+    const digColor = speedFracHud > 0.7 ? '#66ffaa' : speedFracHud > 0.4 ? '#88d4ff' : '#c8e8ff'
     this.speedGaugeText.setColor(digColor)
     this.speedGaugeText.setText(this.currentSpeed.toFixed(1))
-    this.speedGaugeText.setPosition(sailCx, sailCy)
+    this.speedGaugeText.setPosition(w / 2, sailCy)
     this.speedGaugeText.setFontSize(`${Math.max(12, Math.min(20, w * 0.034))}px`)
 
-    // Timer bar at bottom of screen
-    const timerFrac = this.timeLeft / GAME_DURATION
-    const timerBarH = 4
-    const timerBottomInset = Math.max(2, Math.round(this.getBottomSafePadding() * 0.45))
-    const timerY = h - timerBarH - timerBottomInset
-    const timerColor2 = timerFrac > 0.33 ? 0x44aaff : timerFrac > 0.16 ? 0xffdd44 : 0xff4444
+    const progress = Phaser.Math.Clamp(
+      1 - this.distanceToFinish / Math.max(1, this.routeDistance),
+      0,
+      1
+    )
+    const barH = 4
+    const bottomInset = Math.max(2, Math.round(this.getBottomSafePadding() * 0.45))
+    const barY = h - barH - bottomInset
     this.hudGraphics.fillStyle(0x001133, 0.7)
-    this.hudGraphics.fillRect(0, timerY, w, timerBarH + 2)
-    this.hudGraphics.fillStyle(timerColor2, 0.9)
-    this.hudGraphics.fillRect(0, timerY, w * timerFrac, timerBarH + 2)
+    this.hudGraphics.fillRect(0, barY, w, barH + 2)
+    this.hudGraphics.fillStyle(0x44dd88, 0.9)
+    this.hudGraphics.fillRect(0, barY, w * progress, barH + 2)
 
-    // Sail angle hint arc (bottom-center); speed shown as central pie sector inside same dial
-    this.drawSailHint(sailCx, sailCy)
+    this.drawMiniMap()
+    this.drawSailHint(w / 2, sailCy)
   }
 
   private getHudLayout(): { sailCy: number; sailScale: number } {
@@ -547,17 +563,10 @@ export class GameScene extends Phaser.Scene {
     const bgHalfHeight = dialRadius + 6 * sailScale
     const safeBottom = this.getBottomSafePadding()
     const timerBarAndGap = 8
-    const sailCy = Math.max(
-      h * 0.58,
-      h - safeBottom - timerBarAndGap - bgHalfHeight
-    )
+    const sailCy = Math.max(h * 0.58, h - safeBottom - timerBarAndGap - bgHalfHeight)
     return { sailCy, sailScale }
   }
 
-  /**
-   * Keep bottom HUD clear of mobile browser chrome/home indicator.
-   * visualViewport delta captures dynamic bars on iOS/Android browsers.
-   */
   private getBottomSafePadding(): number {
     const w = this.scale.width
     const h = this.scale.height
@@ -570,7 +579,6 @@ export class GameScene extends Phaser.Scene {
     if (tinyPhone) padding += 10
 
     if (typeof window !== 'undefined') {
-      // Read CSS env(safe-area-inset-bottom) to account for notches/home indicator.
       const cssSafe = Number.parseFloat(
         getComputedStyle(document.documentElement).getPropertyValue('--safe-area-bottom')
       )
@@ -590,6 +598,95 @@ export class GameScene extends Phaser.Scene {
     return padding
   }
 
+  private getMiniMapLayout(): { x: number; y: number; w: number; h: number; pad: number } {
+    const vw = this.scale.width
+    const vh = this.scale.height
+    const compact = vw < 520 || vh < 820
+    const mapW = compact
+      ? Phaser.Math.Clamp(Math.round(vw * 0.31), 128, 172)
+      : Phaser.Math.Clamp(Math.round(vw * 0.22), 172, 236)
+    const mapH = compact
+      ? Phaser.Math.Clamp(Math.round(vh * 0.19), 96, 128)
+      : Phaser.Math.Clamp(Math.round(vh * 0.2), 128, 176)
+    const x = 12
+    const y = vh - this.getBottomSafePadding() - mapH - 20
+    const pad = compact ? 10 : 12
+    return { x, y, w: mapW, h: mapH, pad }
+  }
+
+  private drawMiniMap(): void {
+    const g = this.hudGraphics
+    const { x, y, w, h, pad } = this.getMiniMapLayout()
+
+    g.fillStyle(0x000a1f, 0.62)
+    g.fillRoundedRect(x, y, w, h, 9)
+    g.lineStyle(1.5, 0x4a88c9, 0.8)
+    g.strokeRoundedRect(x, y, w, h, 9)
+
+    this.miniMapTitleText.setPosition(x + 4, y - 16)
+    this.miniMapTitleText.setFontSize(`${Math.max(10, Math.min(16, this.scale.width * 0.028))}px`)
+
+    const bounds = this.routeMapBounds
+    const cx = x + w * 0.5
+    const cy = y + h * 0.5
+    const availW = w - pad * 2
+    const availH = h - pad * 2
+    const scale = Math.min(availW / bounds.width, availH / bounds.height)
+    const mapCenterX = (bounds.minX + bounds.maxX) * 0.5
+    const mapCenterY = (bounds.minY + bounds.maxY) * 0.5
+
+    const toMini = (wx: number, wy: number): { x: number; y: number } => ({
+      x: cx + (wx - mapCenterX) * scale,
+      y: cy + (wy - mapCenterY) * scale,
+    })
+
+    const start = toMini(this.routeMap.start.worldX, this.routeMap.start.worldY)
+    const finish = toMini(this.routeMap.finish.worldX, this.routeMap.finish.worldY)
+    const boat = toMini(this.physState.posX, this.physState.posY)
+
+    g.lineStyle(1.3, 0x66ccff, 0.6)
+    g.beginPath()
+    g.moveTo(start.x, start.y)
+    g.lineTo(finish.x, finish.y)
+    g.strokePath()
+
+    const finishR = Math.max(4, this.routeMap.finish.radius * scale)
+    g.fillStyle(0x44ff88, 0.2)
+    g.fillCircle(finish.x, finish.y, finishR)
+    g.lineStyle(1.1, 0x44ff88, 0.9)
+    g.strokeCircle(finish.x, finish.y, finishR)
+
+    for (const a of this.routeMap.windAnchors) {
+      const p = toMini(a.worldX, a.worldY)
+      g.fillStyle(0xaad8ff, 0.95)
+      g.fillCircle(p.x, p.y, 2.2)
+      const ar = 7
+      const ex = p.x + Math.cos(a.direction) * ar
+      const ey = p.y + Math.sin(a.direction) * ar
+      g.lineStyle(1, 0xd8eeff, 0.8)
+      g.beginPath()
+      g.moveTo(p.x, p.y)
+      g.lineTo(ex, ey)
+      g.strokePath()
+    }
+
+    g.fillStyle(0xffe188, 1)
+    g.fillCircle(start.x, start.y, 3.2)
+    g.fillStyle(0x55ff99, 1)
+    g.fillCircle(finish.x, finish.y, 3.2)
+
+    g.fillStyle(0x4488ff, 1)
+    g.fillCircle(boat.x, boat.y, 3.4)
+    g.lineStyle(1.2, 0x4488ff, 0.95)
+    g.beginPath()
+    g.moveTo(boat.x, boat.y)
+    g.lineTo(
+      boat.x + Math.cos(this.currentHeading) * 8,
+      boat.y + Math.sin(this.currentHeading) * 8
+    )
+    g.strokePath()
+  }
+
   private drawWindCompass(
     cx: number,
     cy: number,
@@ -601,20 +698,17 @@ export class GameScene extends Phaser.Scene {
     const g = this.hudGraphics
     const r = 30
 
-    // Background circle
     g.fillStyle(0x001133, 0.7)
     g.fillCircle(cx, cy, r + 6)
     g.lineStyle(1.5, 0x4488aa, 0.6)
     g.strokeCircle(cx, cy, r + 6)
 
-    // Cardinal directions (tiny dots)
     g.fillStyle(0x4488aa, 0.5)
     for (let i = 0; i < 8; i++) {
       const a = (i * Math.PI * 2) / 8
       g.fillCircle(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 2)
     }
 
-    // Wind direction (white): fixed length; strength is in WIND label.
     const windLen = 18
     const wx = Math.cos(windDir)
     const wy = Math.sin(windDir)
@@ -637,7 +731,6 @@ export class GameScene extends Phaser.Scene {
     g.closePath()
     g.fillPath()
 
-    // Water current (aqua): direction = flow toward, length ∝ |current|
     const curFrac = Math.min(1, currentSpeed / this.HUD_CURRENT_SPEED_REF)
     const curLen = Phaser.Math.Clamp(6 + curFrac * (r + 2), 6, r + 2)
     const cxw = Math.cos(currentDir)
@@ -661,7 +754,6 @@ export class GameScene extends Phaser.Scene {
     g.closePath()
     g.fillPath()
 
-    // Boat heading arrow (blue), on top
     const hx = Math.cos(heading)
     const hy = Math.sin(heading)
     g.lineStyle(3, 0x4488ff, 0.9)
@@ -683,11 +775,8 @@ export class GameScene extends Phaser.Scene {
     g.closePath()
     g.fillPath()
 
-    // Center dot
     g.fillStyle(0xffffff, 1)
     g.fillCircle(cx, cy, 3)
-
-    // Text: this.windText ("WIND x.xx")
   }
 
   private drawSailHint(cx: number, cy: number): void {
@@ -695,7 +784,6 @@ export class GameScene extends Phaser.Scene {
     const { sailScale: scale } = this.getHudLayout()
     const r = 28 * scale
 
-    // Background
     g.fillStyle(0x001133, 0.6)
     g.fillRoundedRect(
       cx - r - 30 * scale,
@@ -705,7 +793,6 @@ export class GameScene extends Phaser.Scene {
       8 * scale
     )
 
-    // Speed: pie sector from dial center; opening angle ∝ speed (drawn under zone arcs)
     const speedFrac = Math.min(1, this.currentSpeed / this.HUD_SPEED_BAR_REF)
     if (speedFrac > 1e-5) {
       const maxSweep = Math.PI * 1.4
@@ -721,8 +808,7 @@ export class GameScene extends Phaser.Scene {
       g.fillPath()
     }
 
-    // Arcs match Physics zones: green 45° total, ±45° yellow bands each side
-    const windDir = this.wind.direction
+    const windDir = this.currentWindDirection
 
     g.lineStyle(6 * scale, 0xffdd44, 0.4)
     g.beginPath()
@@ -746,14 +832,12 @@ export class GameScene extends Phaser.Scene {
     )
     g.strokePath()
 
-    // Current sail position indicator
     const sailDir = this.boat.sailAngle
     const sx = cx + Math.cos(sailDir) * r
     const sy = cy + Math.sin(sailDir) * r
 
     const sailColors: Record<string, number> = { green: 0x44ff88, yellow: 0xffdd44, gray: 0x9aa0a8 }
     const sailColor = sailColors[this.lastThrust.quality]
-
     g.fillStyle(sailColor, 1)
     g.fillCircle(sx, sy, 5 * scale)
     g.lineStyle(1.5 * scale, sailColor, 0.8)
@@ -762,150 +846,162 @@ export class GameScene extends Phaser.Scene {
     g.lineTo(sx, sy)
     g.strokePath()
 
-    // Wind direction indicator on the arc
     const windX = cx + Math.cos(windDir) * (r - 8 * scale)
     const windY = cy + Math.sin(windDir) * (r - 8 * scale)
     g.fillStyle(0xffffff, 0.8)
     g.fillCircle(windX, windY, 3 * scale)
 
-    // Center circle
     g.lineStyle(1 * scale, 0x4488aa, 0.5)
     g.strokeCircle(cx, cy, r)
     g.fillStyle(0x001133, 0.8)
     g.fillCircle(cx, cy, 4 * scale)
   }
 
-  private showGameOver(): void {
+  private completeVoyage(): void {
+    if (this.gameOver) return
     this.gameOver = true
+    this.reachedFinish = true
     this.isDragging = false
+    this.finalTimeSec = this.elapsedRaceSec
+
+    const oldBest = this.bestTimeSec
+    if (oldBest === null || this.finalTimeSec < oldBest) {
+      this.bestTimeSec = this.finalTimeSec
+      this.saveBestTime(this.finalTimeSec)
+      this.isNewRecord = true
+    } else {
+      this.isNewRecord = false
+    }
 
     const w = this.scale.width
     const h = this.scale.height
-    const meters = Math.floor(this.totalDistance * this.METERS_PER_UNIT)
 
-    // Overlay
     const overlay = this.add.graphics()
     overlay.fillStyle(0x000022, 0.75)
     overlay.fillRect(0, 0, w, h)
     overlay.setDepth(50)
 
-    // Panel
-    const panelW = Math.min(w * 0.85, 400)
-    const panelH = Math.min(h * 0.55, 320)
+    const panelW = Math.min(w * 0.86, 430)
+    const panelH = Math.min(h * 0.62, 380)
     const panelX = w / 2 - panelW / 2
     const panelY = h / 2 - panelH / 2
 
-    const panel = this.add.graphics()
-    panel.setDepth(51)
-
-    // Panel background with ocean theme
+    const panel = this.add.graphics().setDepth(51)
     panel.fillStyle(0x0a1e40, 1)
     panel.fillRoundedRect(panelX, panelY, panelW, panelH, 16)
     panel.lineStyle(2, 0x4488cc, 1)
     panel.strokeRoundedRect(panelX, panelY, panelW, panelH, 16)
-
-    // Top accent
     panel.fillStyle(0x1a3a70, 1)
-    panel.fillRoundedRect(panelX, panelY, panelW, panelH * 0.35, 16)
+    panel.fillRoundedRect(panelX, panelY, panelW, panelH * 0.3, 16)
     panel.fillStyle(0x1a3a70, 1)
-    panel.fillRect(panelX, panelY + panelH * 0.25, panelW, panelH * 0.1)
+    panel.fillRect(panelX, panelY + panelH * 0.2, panelW, panelH * 0.1)
 
-    const fs = Math.min(w * 0.06, 32)
+    const fs = Math.min(w * 0.058, 31)
+    this.add
+      .text(w / 2, panelY + 30, 'DESTINATION REACHED!', {
+        fontSize: `${fs}px`,
+        fontFamily: 'Georgia, serif',
+        color: '#e8f4ff',
+        stroke: '#000033',
+        strokeThickness: 4,
+      })
+      .setOrigin(0.5, 0)
+      .setDepth(52)
 
-    // Title
-    const overTitle = this.add.text(w / 2, panelY + 30, 'VOYAGE COMPLETE!', {
-      fontSize: fs + 'px',
-      fontFamily: 'Georgia, serif',
-      color: '#e8f4ff',
-      stroke: '#000033',
-      strokeThickness: 4,
-    })
-    overTitle.setOrigin(0.5, 0)
-    overTitle.setDepth(52)
+    this.add
+      .text(w / 2, panelY + panelH * 0.38, 'TIME', {
+        fontSize: `${Math.floor(fs * 0.56)}px`,
+        fontFamily: 'Arial, sans-serif',
+        color: '#88aacc',
+      })
+      .setOrigin(0.5)
+      .setDepth(52)
 
-    // Score display
-    const scoreLabel = this.add.text(w / 2, panelY + panelH * 0.42, 'DISTANCE SAILED', {
-      fontSize: Math.floor(fs * 0.55) + 'px',
-      fontFamily: 'Arial, sans-serif',
-      color: '#88aacc',
-    })
-    scoreLabel.setOrigin(0.5)
-    scoreLabel.setDepth(52)
+    this.add
+      .text(w / 2, panelY + panelH * 0.5, `${this.finalTimeSec.toFixed(1)}s`, {
+        fontSize: `${Math.floor(fs * 1.3)}px`,
+        fontFamily: 'Georgia, serif',
+        color: '#44ddff',
+        stroke: '#001133',
+        strokeThickness: 5,
+      })
+      .setOrigin(0.5)
+      .setDepth(52)
 
-    const scoreDisplay = this.add.text(w / 2, panelY + panelH * 0.57, `${meters}m`, {
-      fontSize: Math.floor(fs * 1.4) + 'px',
-      fontFamily: 'Georgia, serif',
-      color: '#44ddff',
-      stroke: '#001133',
-      strokeThickness: 5,
-    })
-    scoreDisplay.setOrigin(0.5)
-    scoreDisplay.setDepth(52)
+    const bestLabel =
+      this.bestTimeSec === null ? 'BEST: --' : `BEST: ${this.bestTimeSec.toFixed(1)}s`
+    this.add
+      .text(w / 2, panelY + panelH * 0.64, bestLabel, {
+        fontSize: `${Math.floor(fs * 0.64)}px`,
+        fontFamily: 'Arial, sans-serif',
+        color: '#c2e6ff',
+      })
+      .setOrigin(0.5)
+      .setDepth(52)
 
-    // Rating
-    const rating = this.getRating(meters)
-    const ratingText = this.add.text(w / 2, panelY + panelH * 0.72, rating.text, {
-      fontSize: Math.floor(fs * 0.65) + 'px',
-      fontFamily: 'Georgia, serif',
-      color: rating.color,
-    })
-    ratingText.setOrigin(0.5)
-    ratingText.setDepth(52)
+    if (this.isNewRecord) {
+      this.add
+        .text(w / 2, panelY + panelH * 0.74, 'NEW RECORD!', {
+          fontSize: `${Math.floor(fs * 0.66)}px`,
+          fontFamily: 'Georgia, serif',
+          color: '#ffdd44',
+        })
+        .setOrigin(0.5)
+        .setDepth(52)
+    }
 
-    // Play again button
-    const btnW2 = Math.min(panelW * 0.7, 220)
-    const btnH2 = 48
-    const btnX2 = w / 2 - btnW2 / 2
-    const btnY2 = panelY + panelH - 64
+    const btnW = Math.min(panelW * 0.7, 230)
+    const btnH = 48
+    const btnX = w / 2 - btnW / 2
+    const btnY = panelY + panelH - 66
 
-    const btnBg2 = this.add.graphics()
-    btnBg2.setDepth(52)
-    this.drawPanelButton(btnBg2, btnX2, btnY2, btnW2, btnH2, false)
+    const btnBg = this.add.graphics().setDepth(52)
+    this.drawPanelButton(btnBg, btnX, btnY, btnW, btnH, false)
+    this.add
+      .text(w / 2, btnY + btnH / 2, 'SAIL AGAIN', {
+        fontSize: `${Math.floor(fs * 0.74)}px`,
+        fontFamily: 'Georgia, serif',
+        color: '#ffffff',
+        stroke: '#002255',
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5)
+      .setDepth(53)
 
-    const btnTxt2 = this.add.text(w / 2, btnY2 + btnH2 / 2, 'SAIL AGAIN', {
-      fontSize: Math.floor(fs * 0.75) + 'px',
-      fontFamily: 'Georgia, serif',
-      color: '#ffffff',
-      stroke: '#002255',
-      strokeThickness: 3,
-    })
-    btnTxt2.setOrigin(0.5)
-    btnTxt2.setDepth(53)
+    const btnZone = this.add
+      .zone(w / 2, btnY + btnH / 2, btnW + 20, btnH + 20)
+      .setInteractive()
+      .setDepth(54)
 
-    const btnZone2 = this.add.zone(w / 2, btnY2 + btnH2 / 2, btnW2 + 20, btnH2 + 20).setInteractive()
-    btnZone2.setDepth(54)
-
-    btnZone2.on('pointerover', () => this.drawPanelButton(btnBg2, btnX2, btnY2, btnW2, btnH2, true))
-    btnZone2.on('pointerout', () => this.drawPanelButton(btnBg2, btnX2, btnY2, btnW2, btnH2, false))
-    btnZone2.on('pointerdown', () => {
-      this.scene.restart()
-    })
-
-    // Animate score counting up
-    let displayedMeters = 0
-    const countUp = this.time.addEvent({
-      delay: 16,
-      repeat: 60,
-      callback: () => {
-        displayedMeters = Math.min(meters, displayedMeters + Math.ceil(meters / 60))
-        scoreDisplay.setText(`${displayedMeters}m`)
-      },
-    })
+    btnZone.on('pointerover', () => this.drawPanelButton(btnBg, btnX, btnY, btnW, btnH, true))
+    btnZone.on('pointerout', () => this.drawPanelButton(btnBg, btnX, btnY, btnW, btnH, false))
+    btnZone.on('pointerdown', () => this.scene.restart())
   }
 
-  private getRating(meters: number): { text: string; color: string } {
-    if (meters >= 600) return { text: 'MASTER SAILOR! Extraordinary!', color: '#ffdd44' }
-    if (meters >= 420) return { text: 'EXPERT! Excellent sailing!', color: '#44ff88' }
-    if (meters >= 240) return { text: 'SKILLED! Great run!', color: '#44aaff' }
-    if (meters >= 100) return { text: 'CAPABLE! Good effort!', color: '#aaaaff' }
-    return { text: 'NOVICE. Keep practicing!', color: '#aaaaaa' }
+  private loadBestTime(): number | null {
+    if (typeof window === 'undefined' || !window.localStorage) return null
+    const raw = window.localStorage.getItem(this.BEST_TIME_STORAGE_KEY)
+    if (!raw) return null
+    const v = Number.parseFloat(raw)
+    return Number.isFinite(v) && v > 0 ? v : null
   }
 
-  private drawPanelButton(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number, hovered: boolean): void {
+  private saveBestTime(sec: number): void {
+    if (typeof window === 'undefined' || !window.localStorage) return
+    window.localStorage.setItem(this.BEST_TIME_STORAGE_KEY, sec.toFixed(3))
+  }
+
+  private drawPanelButton(
+    g: Phaser.GameObjects.Graphics,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    hovered: boolean
+  ): void {
     g.clear()
     const mainColor = hovered ? 0x2266bb : 0x1a4a8a
     const borderColor = hovered ? 0x66aaff : 0x4488cc
-
     g.fillStyle(mainColor, 1)
     g.fillRoundedRect(x, y, w, h, 10)
     g.fillStyle(0xffffff, 0.12)
@@ -918,16 +1014,10 @@ export class GameScene extends Phaser.Scene {
     const w = this.scale.width
     const { sailCy } = this.getHudLayout()
 
-    // Reposition HUD elements
-    if (this.scoreText) {
-      this.scoreText.setPosition(w - 16, 16)
-    }
-    if (this.windText) {
-      this.windText.setPosition(w / 2, 82)
-    }
-    if (this.speedGaugeText) {
-      this.speedGaugeText.setPosition(w / 2, sailCy)
-    }
+    if (this.scoreText) this.scoreText.setPosition(w - 16, 16)
+    if (this.windText) this.windText.setPosition(w / 2, 82)
+    if (this.speedGaugeText) this.speedGaugeText.setPosition(w / 2, sailCy)
+
     if (this.zoomMinusZone && this.zoomPlusZone) {
       this.zoomMinusZone.destroy()
       this.zoomPlusZone.destroy()
@@ -938,9 +1028,7 @@ export class GameScene extends Phaser.Scene {
       this.createZoomControls()
     }
 
-    if (this.world) {
-      this.world.resize(this.physState.posX, this.physState.posY)
-    }
+    if (this.world) this.world.resize(this.physState.posX, this.physState.posY)
   }
 
   shutdown(): void {
