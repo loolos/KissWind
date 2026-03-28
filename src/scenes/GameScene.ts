@@ -74,7 +74,7 @@ export class GameScene extends Phaser.Scene {
   /** Top compass: current arrow reaches ~full radius at this |current| (world units/s). */
   private readonly HUD_CURRENT_SPEED_REF = 5
   /** Extra bottom margin so mobile browser bars/home indicator do not cover HUD. */
-  private readonly HUD_BOTTOM_MARGIN = 14
+  private readonly HUD_BOTTOM_MARGIN = 18
 
   constructor() {
     super({ key: 'GameScene' })
@@ -525,11 +525,13 @@ export class GameScene extends Phaser.Scene {
     // Timer bar at bottom of screen
     const timerFrac = this.timeLeft / GAME_DURATION
     const timerBarH = 4
+    const timerBottomInset = Math.max(2, Math.round(this.getBottomSafePadding() * 0.45))
+    const timerY = h - timerBarH - timerBottomInset
     const timerColor2 = timerFrac > 0.33 ? 0x44aaff : timerFrac > 0.16 ? 0xffdd44 : 0xff4444
     this.hudGraphics.fillStyle(0x001133, 0.7)
-    this.hudGraphics.fillRect(0, h - timerBarH - 2, w, timerBarH + 2)
+    this.hudGraphics.fillRect(0, timerY, w, timerBarH + 2)
     this.hudGraphics.fillStyle(timerColor2, 0.9)
-    this.hudGraphics.fillRect(0, h - timerBarH - 2, w * timerFrac, timerBarH + 2)
+    this.hudGraphics.fillRect(0, timerY, w * timerFrac, timerBarH + 2)
 
     // Sail angle hint arc (bottom-center); speed shown as central pie sector inside same dial
     this.drawSailHint(sailCx, sailCy)
@@ -561,14 +563,27 @@ export class GameScene extends Phaser.Scene {
     const h = this.scale.height
     const compact = w < 520 || h < 860
     const ultraCompact = w < 390 || h < 700
+    const tinyPhone = w <= 430 || h <= 760
     let padding = this.HUD_BOTTOM_MARGIN
     if (compact) padding += 10
     if (ultraCompact) padding += 8
+    if (tinyPhone) padding += 10
+
+    if (typeof window !== 'undefined') {
+      // Read CSS env(safe-area-inset-bottom) to account for notches/home indicator.
+      const cssSafe = Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--safe-area-bottom')
+      )
+      if (Number.isFinite(cssSafe) && cssSafe > 0) {
+        padding += Phaser.Math.Clamp(Math.round(cssSafe), 0, 40)
+      }
+    }
 
     if (typeof window !== 'undefined') {
       const vv = window.visualViewport
       if (vv) {
-        const browserUiInset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
+        const layoutViewportH = Math.max(window.innerHeight, document.documentElement.clientHeight)
+        const browserUiInset = Math.max(0, Math.round(layoutViewportH - vv.height - vv.offsetTop))
         padding += Phaser.Math.Clamp(browserUiInset, 0, 60)
       }
     }
