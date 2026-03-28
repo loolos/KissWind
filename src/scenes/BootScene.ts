@@ -79,7 +79,8 @@ export class BootScene extends Phaser.Scene {
 
     const panelLayout = this.getHudLegendLayout(w, h)
     const instrSize = Math.min(w * 0.03, 16)
-    const instrText = 'Drag to rotate the sail\nFind the sweet spot for maximum speed\n180 seconds to sail as far as possible'
+    const instrText =
+      'Drag to rotate the sail\nStart from the marked harbor and reach the green finish zone\nUse the lower-left mini map: wind anchors have different directions'
     const instrLineHeight = instrSize * 1.35
     const instrBlockH = instrLineHeight * 3
     const bottomSafeY = h - Math.max(26, h * 0.035)

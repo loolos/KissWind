@@ -1,13 +1,12 @@
 import { MAP_ZOOM_BASE, viewportHalfExtents } from './mapConfig'
 import { normalizeAngle } from './Physics'
+import { FIXED_ROUTE_MAP, FixedRouteMap, sampleMapWindAt } from './fixedMap'
 
 /**
  * Base wind strength (global scale). `Wind.strength` and its oscillation band are built from this;
  * gust / dead zones apply fixed coefficients to the current `strength` (see `getStrengthAt`).
  */
 export const BASE_WIND = 3
-/** Wind direction angular change vs previous (applied to d(direction)/dt). */
-const WIND_DIRECTION_CHANGE_MULT = 0.3
 
 /**
  * Zone radius in pre-zoom units: (base / mapZoom) * radiusMult = world radius.
@@ -60,33 +59,27 @@ export class Wind {
   strength: number        // base strength
   /** Matches map projection / World.mapZoom for spawn radii and distances. */
   mapZoom: number = MAP_ZOOM_BASE
-  private driftRate: number
-  private driftTimer: number
-  private driftDuration: number
-  private targetDrift: number
+  private readonly fixedMap: FixedRouteMap
+  private elapsedSec: number
 
   zones: WindZone[]
   private zoneTimer: number
   private zoneDuration: number
 
-  constructor() {
-    this.direction = Math.random() * Math.PI * 2
-    this.strength = 1.0 * BASE_WIND
-    this.driftRate = 0
-    this.driftTimer = 0
-    this.driftDuration = this.randomDriftDuration()
-    this.targetDrift = this.randomDrift()
+  constructor(fixedMap: FixedRouteMap = FIXED_ROUTE_MAP) {
+    this.fixedMap = fixedMap
+    const startWind = sampleMapWindAt(
+      fixedMap,
+      fixedMap.start.worldX,
+      fixedMap.start.worldY,
+      0
+    )
+    this.direction = startWind.direction
+    this.strength = startWind.strength
+    this.elapsedSec = 0
     this.zones = []
     this.zoneTimer = 0
     this.zoneDuration = 5
-  }
-
-  private randomDriftDuration(): number {
-    return 5 + Math.random() * 5
-  }
-
-  private randomDrift(): number {
-    return (Math.random() - 0.5) * 0.4  // ±0.2 rad/s
   }
 
   private maxZoneRadiusWorld(): number {
@@ -178,28 +171,12 @@ export class Wind {
     viewH?: number,
     boatHeading?: number
   ): void {
-    // Wind direction drift
-    this.driftTimer += dt
-    if (this.driftTimer >= this.driftDuration) {
-      this.driftTimer = 0
-      this.driftDuration = this.randomDriftDuration()
-      this.targetDrift = this.randomDrift()
-    }
-
-    // Smoothly interpolate drift rate
-    this.driftRate += (this.targetDrift - this.driftRate) * dt * 0.5
-    this.direction = normalizeAngle(
-      this.direction + this.driftRate * dt * WIND_DIRECTION_CHANGE_MULT
-    )
-
-    // Slowly vary strength
-    const strengthTarget =
-      (0.8 + Math.sin(this.driftTimer * 0.3) * 0.4) * BASE_WIND
-    this.strength += (strengthTarget - this.strength) * dt * 0.1
-    this.strength = Math.max(
-      0.5 * BASE_WIND,
-      Math.min(2.0 * BASE_WIND, this.strength)
-    )
+    this.elapsedSec += dt
+    const baseWind = sampleMapWindAt(this.fixedMap, boatWorldX, boatWorldY, this.elapsedSec)
+    const dirDelta = normalizeAngle(baseWind.direction - this.direction)
+    this.direction = normalizeAngle(this.direction + dirDelta * Math.min(1, dt * 3.2))
+    this.strength += (baseWind.strength - this.strength) * Math.min(1, dt * 2.4)
+    this.strength = Math.max(0.4, this.strength)
 
     // Spawn/remove zones
     this.zoneTimer += dt
@@ -226,10 +203,13 @@ export class Wind {
   }
 
   /**
-   * Get effective wind strength at a world position, accounting for zones.
+   * Get effective wind at a world position:
+   * - fixed-map interpolated large-scale wind
+   * - plus random gust/dead zone multipliers
    */
-  getStrengthAt(worldX: number, worldY: number): number {
-    let s = this.strength
+  getWindAt(worldX: number, worldY: number): { direction: number; strength: number } {
+    const base = sampleMapWindAt(this.fixedMap, worldX, worldY, this.elapsedSec)
+    let s = base.strength
     for (const zone of this.zones) {
       const dx = worldX - zone.worldX
       const dy = worldY - zone.worldY
@@ -239,6 +219,13 @@ export class Wind {
         s = s * (1 - w) + s * zone.multiplier * w
       }
     }
-    return Math.max(0.1, s)
+    return {
+      direction: base.direction,
+      strength: Math.max(0.1, s),
+    }
+  }
+
+  getStrengthAt(worldX: number, worldY: number): number {
+    return this.getWindAt(worldX, worldY).strength
   }
 }
