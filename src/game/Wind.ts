@@ -1,34 +1,45 @@
-import { MAP_ZOOM, viewportHalfExtents } from './mapConfig'
+import { MAP_ZOOM_BASE, viewportHalfExtents } from './mapConfig'
 import { normalizeAngle } from './Physics'
 
-/** World-space distances are divided by MAP_ZOOM so screen appearance matches pre-zoom behavior. */
-const Z = MAP_ZOOM
-
-/** Base wind strength level vs previous default (~1.0). */
-const BASE_WIND_STRENGTH_MULT = 1.5
+/**
+ * Base wind strength (global scale). `Wind.strength` and its oscillation band are built from this;
+ * gust / dead zones apply fixed coefficients to the current `strength` (see `getStrengthAt`).
+ */
+const BASE_WIND = 3
 /** Wind direction angular change vs previous (applied to d(direction)/dt). */
 const WIND_DIRECTION_CHANGE_MULT = 0.3
 
-/** Wind zone radius vs base (80–200 world-units before Z): random 1.5×–2×. */
-const ZONE_RADIUS_MULT_MIN = 1.5
-const ZONE_RADIUS_MULT_MAX = 2
-
 /**
- * Max zone radius in world units (for spawn distance / culling).
- * Matches (200/Z) * ZONE_RADIUS_MULT_MAX.
+ * Zone radius in pre-zoom units: (base / mapZoom) * radiusMult = world radius.
+ * Larger bases + mults = visibly bigger gust / dead patches on the map.
  */
-function maxZoneRadiusWorld(): number {
-  return (200 / Z) * ZONE_RADIUS_MULT_MAX
+const ZONE_RADIUS_BASE_MIN = 140
+const ZONE_RADIUS_BASE_MAX = 320
+const ZONE_RADIUS_MULT_MIN = 2.0
+const ZONE_RADIUS_MULT_MAX = 2.75
+
+/** 0 at edge, 1 at center: smooth C¹ fade for wind strength inside the disc. */
+function zoneRadialInfluence(dist: number, radius: number): number {
+  if (dist >= radius || radius <= 0) return 0
+  const u = 1 - dist / radius
+  const t = u <= 0 ? 0 : u >= 1 ? 1 : u
+  return t * t * (3 - 2 * t)
 }
 
-/** Drop zones farther than this from the boat (must exceed max off-screen spawn distance). */
-const ZONE_KEEP_DISTANCE = 5200 / Z
 
 /** Replenish toward this many zones (each timer tick adds up to SPAWN_PER_TICK). */
-const ZONE_TARGET_MAX = 12
+const ZONE_TARGET_MAX = 16
 /** Initial zones placed at game start. */
-const INITIAL_ZONE_COUNT = 6
-const SPAWN_PER_TICK = 2
+const INITIAL_ZONE_COUNT = 8
+const SPAWN_PER_TICK = 4
+
+/** Fraction of spawns biased toward boat heading (rest: full circle). */
+const SPAWN_FORWARD_BIAS = 0.72
+/** Half-width of forward cone (rad): ±π/2 = semicircle ahead of velocity. */
+const SPAWN_FORWARD_HALF_WIDTH = Math.PI / 2
+
+/** Gust zone: at disc center, effective strength → `strength` × this (coefficient on base wind). */
+const GUST_ZONE_MULTIPLIER = 3.0
 
 /**
  * ~50% spawns use this nearer band (still mostly off-screen but reachable);
@@ -47,6 +58,8 @@ export interface WindZone {
 export class Wind {
   direction: number       // radians, direction wind blows TOWARD
   strength: number        // base strength
+  /** Matches map projection / World.mapZoom for spawn radii and distances. */
+  mapZoom: number = MAP_ZOOM_BASE
   private driftRate: number
   private driftTimer: number
   private driftDuration: number
@@ -58,7 +71,7 @@ export class Wind {
 
   constructor() {
     this.direction = Math.random() * Math.PI * 2
-    this.strength = 1.0 * BASE_WIND_STRENGTH_MULT
+    this.strength = 1.0 * BASE_WIND
     this.driftRate = 0
     this.driftTimer = 0
     this.driftDuration = this.randomDriftDuration()
@@ -76,40 +89,75 @@ export class Wind {
     return (Math.random() - 0.5) * 0.4  // ±0.2 rad/s
   }
 
+  private maxZoneRadiusWorld(): number {
+    return (ZONE_RADIUS_BASE_MAX / this.mapZoom) * ZONE_RADIUS_MULT_MAX
+  }
+
+  private zoneKeepDistance(): number {
+    return 5200 / this.mapZoom
+  }
+
+  setMapZoom(z: number): void {
+    this.mapZoom = z
+  }
+
   /** Call from GameScene after viewport size is known (e.g. create). */
-  spawnInitialZones(viewW: number, viewH: number, centerX = 0, centerY = 0): void {
-    const viewport = viewportHalfExtents(viewW, viewH, MAP_ZOOM)
+  spawnInitialZones(
+    viewW: number,
+    viewH: number,
+    centerX = 0,
+    centerY = 0,
+    boatHeading?: number
+  ): void {
+    const viewport = viewportHalfExtents(viewW, viewH, this.mapZoom)
     for (let i = 0; i < INITIAL_ZONE_COUNT; i++) {
-      this.spawnZone(centerX, centerY, viewport)
+      this.spawnZone(centerX, centerY, viewport, boatHeading)
     }
+  }
+
+  private sampleSpawnAngle(boatHeading?: number): number {
+    if (boatHeading === undefined) {
+      return Math.random() * Math.PI * 2
+    }
+    if (Math.random() < SPAWN_FORWARD_BIAS) {
+      return normalizeAngle(
+        boatHeading + (Math.random() - 0.5) * 2 * SPAWN_FORWARD_HALF_WIDTH
+      )
+    }
+    return Math.random() * Math.PI * 2
   }
 
   spawnZone(
     centerX = 0,
     centerY = 0,
-    viewport?: { halfW: number; halfH: number }
+    viewport?: { halfW: number; halfH: number },
+    boatHeading?: number
   ): void {
-    const angle = Math.random() * Math.PI * 2
+    const angle = this.sampleSpawnAngle(viewport !== undefined ? boatHeading : undefined)
+    const z = this.mapZoom
     const radiusMult = ZONE_RADIUS_MULT_MIN + Math.random() * (ZONE_RADIUS_MULT_MAX - ZONE_RADIUS_MULT_MIN)
-    const radius = ((80 + Math.random() * 120) / Z) * radiusMult
+    const base =
+      ZONE_RADIUS_BASE_MIN +
+      Math.random() * (ZONE_RADIUS_BASE_MAX - ZONE_RADIUS_BASE_MIN)
+    const radius = (base / z) * radiusMult
 
     let dist: number
     if (viewport) {
       const diag = Math.sqrt(viewport.halfW * viewport.halfW + viewport.halfH * viewport.halfH)
-      const rMax = maxZoneRadiusWorld()
-      const margin = 120 / Z
+      const rMax = this.maxZoneRadiusWorld()
+      const margin = 120 / z
       if (Math.random() < NEAR_SPAWN_FRAC) {
         // Closer ring: easier to intersect while playing; inner edge can graze the view.
-        const distMinNear = diag + 30 / Z + Math.random() * (40 / Z)
-        const distRangeNear = (400 + Math.random() * 500) / Z
+        const distMinNear = diag + 30 / z + Math.random() * (40 / z)
+        const distRangeNear = (400 + Math.random() * 500) / z
         dist = distMinNear + Math.random() * distRangeNear
       } else {
         const distMinFar = diag + rMax + margin
-        const distRangeFar = (700 + Math.random() * 600) / Z
+        const distRangeFar = (700 + Math.random() * 600) / z
         dist = distMinFar + Math.random() * distRangeFar
       }
     } else {
-      dist = (300 + Math.random() * 600) / Z
+      dist = (300 + Math.random() * 600) / z
     }
 
     const type = Math.random() < 0.6 ? 'gust' : 'dead'
@@ -118,7 +166,7 @@ export class Wind {
       worldY: centerY + Math.sin(angle) * dist,
       radius,
       type,
-      multiplier: type === 'gust' ? 1.5 : 0.3,
+      multiplier: type === 'gust' ? GUST_ZONE_MULTIPLIER : 0.3,
     })
   }
 
@@ -127,7 +175,8 @@ export class Wind {
     boatWorldX: number,
     boatWorldY: number,
     viewW?: number,
-    viewH?: number
+    viewH?: number,
+    boatHeading?: number
   ): void {
     // Wind direction drift
     this.driftTimer += dt
@@ -145,31 +194,32 @@ export class Wind {
 
     // Slowly vary strength
     const strengthTarget =
-      (0.8 + Math.sin(this.driftTimer * 0.3) * 0.4) * BASE_WIND_STRENGTH_MULT
+      (0.8 + Math.sin(this.driftTimer * 0.3) * 0.4) * BASE_WIND
     this.strength += (strengthTarget - this.strength) * dt * 0.1
     this.strength = Math.max(
-      0.5 * BASE_WIND_STRENGTH_MULT,
-      Math.min(2.0 * BASE_WIND_STRENGTH_MULT, this.strength)
+      0.5 * BASE_WIND,
+      Math.min(2.0 * BASE_WIND, this.strength)
     )
 
     // Spawn/remove zones
     this.zoneTimer += dt
     if (this.zoneTimer >= this.zoneDuration) {
       this.zoneTimer = 0
-      this.zoneDuration = 3 + Math.random() * 5
+      this.zoneDuration = 1.2 + Math.random() * 2.2
       // Remove old zones far away
-      this.zones = this.zones.filter(z => {
-        const dx = z.worldX - boatWorldX
-        const dy = z.worldY - boatWorldY
-        return Math.sqrt(dx * dx + dy * dy) < ZONE_KEEP_DISTANCE
+      const keepDist = this.zoneKeepDistance()
+      this.zones = this.zones.filter(zone => {
+        const dx = zone.worldX - boatWorldX
+        const dy = zone.worldY - boatWorldY
+        return Math.sqrt(dx * dx + dy * dy) < keepDist
       })
       const viewport =
         viewW !== undefined && viewH !== undefined
-          ? viewportHalfExtents(viewW, viewH, MAP_ZOOM)
+          ? viewportHalfExtents(viewW, viewH, this.mapZoom)
           : undefined
       let n = 0
       while (this.zones.length < ZONE_TARGET_MAX && n < SPAWN_PER_TICK) {
-        this.spawnZone(boatWorldX, boatWorldY, viewport)
+        this.spawnZone(boatWorldX, boatWorldY, viewport, boatHeading)
         n++
       }
     }
@@ -184,9 +234,9 @@ export class Wind {
       const dx = worldX - zone.worldX
       const dy = worldY - zone.worldY
       const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist < zone.radius) {
-        const blend = 1 - dist / zone.radius
-        s = s * (1 - blend) + s * zone.multiplier * blend
+      const w = zoneRadialInfluence(dist, zone.radius)
+      if (w > 0) {
+        s = s * (1 - w) + s * zone.multiplier * w
       }
     }
     return Math.max(0.1, s)

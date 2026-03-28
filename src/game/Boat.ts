@@ -1,4 +1,5 @@
 import Phaser from 'phaser'
+import { MAP_ZOOM_BASE } from './mapConfig'
 import { SailQuality } from './Physics'
 
 /** Hull, mast, sail, strokes, and wake scale in the gameplay view (1 = original size). */
@@ -34,6 +35,8 @@ export class Boat {
 
   private trailPoints: { x: number; y: number }[] = []
   private trailTimer: number = 0
+  /** BOAT_VIS_SCALE × (mapZoom / MAP_ZOOM_BASE)^0.3; zoom out → smaller boat, gentler than sqrt. */
+  private visScale: number = BOAT_VIS_SCALE
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene
@@ -53,17 +56,18 @@ export class Boat {
 
   /** World horizontal offset from boat center → screen (Phaser y down). */
   private projWorld(wx: number, wy: number, wz: number, cx: number, cy: number): { x: number; y: number } {
-    const S = BOAT_VIS_SCALE
+    const S = this.visScale
     return {
       x: cx + wx * S,
       y: cy + wy * S * CE_COS - wz * S * CE_SIN,
     }
   }
 
-  update(dt: number, heading: number, speed: number, quality: SailQuality): void {
+  update(dt: number, heading: number, speed: number, quality: SailQuality, mapZoom: number): void {
     this.heading = heading
     this.speed = speed
     this.sailQuality = quality
+    this.visScale = BOAT_VIS_SCALE * Math.pow(mapZoom / MAP_ZOOM_BASE, 0.3)
 
     this.trailTimer += dt
     if (this.trailTimer > 0.05) {
@@ -87,12 +91,12 @@ export class Boat {
     if (this.speed > 0.3) {
       const wakeAngle = this.heading + Math.PI
       for (let side = -1; side <= 1; side += 2) {
-        this.trailGraphics.lineStyle(1.5 * BOAT_VIS_SCALE, 0xaaddff, 0.3)
+        this.trailGraphics.lineStyle(1.5 * this.visScale, 0xaaddff, 0.3)
         this.trailGraphics.beginPath()
         let first = true
         for (let i = 0; i < 20; i++) {
           const t = i / 20
-          const dist = i * 6 * BOAT_VIS_SCALE
+          const dist = i * 6 * this.visScale
           const spreadAngle = wakeAngle + side * t * 0.35
           const wx = cx + Math.cos(spreadAngle) * dist
           const wy = cy + Math.sin(spreadAngle) * dist
@@ -108,9 +112,9 @@ export class Boat {
     this.graphics.clear()
     const g = this.graphics
 
-    const hullLength = 56 * BOAT_VIS_SCALE
-    const hullWidth = 12 * BOAT_VIS_SCALE
-    const mastHeight = 58 * BOAT_VIS_SCALE
+    const hullLength = 56 * this.visScale
+    const hullWidth = 12 * this.visScale
+    const mastHeight = 58 * this.visScale
 
     const hullPoints = this.buildHull(hullLength, hullWidth)
     const rotatedHull = hullPoints.map(p => this.rotatePoint(p.x, p.y, this.heading))
@@ -118,7 +122,7 @@ export class Boat {
       this.rotatePoint(p.x * 0.72, p.y * 0.72, this.heading)
     )
 
-    const sh = 3 * BOAT_VIS_SCALE
+    const sh = 3 * this.visScale
     g.fillStyle(0x000000, 0.22)
     g.beginPath()
     {
@@ -160,7 +164,7 @@ export class Boat {
 
     const bow = this.rotatePoint(hullLength * 0.35, 0, this.heading)
     const stern = this.rotatePoint(-hullLength * 0.35, 0, this.heading)
-    g.lineStyle(1.2 * BOAT_VIS_SCALE, DECK_LINE, 0.55)
+    g.lineStyle(1.2 * this.visScale, DECK_LINE, 0.55)
     {
       const a = this.projWorld(bow.x * 0.55, bow.y * 0.55, 0, cx, cy)
       const b = this.projWorld(stern.x * 0.55, stern.y * 0.55, 0, cx, cy)
@@ -178,7 +182,7 @@ export class Boat {
       g.strokePath()
     }
 
-    g.lineStyle(2 * BOAT_VIS_SCALE, HULL_OUTLINE, 1)
+    g.lineStyle(2 * this.visScale, HULL_OUTLINE, 1)
     g.beginPath()
     {
       const p0 = this.projWorld(rotatedHull[0].x, rotatedHull[0].y, 0, cx, cy)
@@ -191,7 +195,7 @@ export class Boat {
     g.closePath()
     g.strokePath()
 
-    const mastX = 5 * BOAT_VIS_SCALE
+    const mastX = 5 * this.visScale
     const mastBaseOff = this.rotatePoint(mastX, 0, this.heading)
     const mast_wx = mastBaseOff.x
     const mast_wy = mastBaseOff.y
@@ -215,7 +219,7 @@ export class Boat {
 
     const beamUx = Math.cos(this.heading + Math.PI / 2)
     const beamUy = Math.sin(this.heading + Math.PI / 2)
-    const clewDist = 56 * BOAT_VIS_SCALE
+    const clewDist = 56 * this.visScale
 
     const clew_wx = mast_wx + Math.cos(this.sailAngle) * clewDist
     const clew_wy = mast_wy + Math.sin(this.sailAngle) * clewDist
@@ -260,7 +264,7 @@ export class Boat {
       g.lineTo(cx2, cy2)
       g.closePath()
       g.fillPath()
-      g.lineStyle(1.5 * BOAT_VIS_SCALE, 0x000000, 0.45)
+      g.lineStyle(1.5 * this.visScale, 0x000000, 0.45)
       g.beginPath()
       g.moveTo(ax, ay)
       g.lineTo(bx, by)
@@ -278,7 +282,7 @@ export class Boat {
       cy2: number,
       alpha: number
     ): void => {
-      g.lineStyle(1.1 * BOAT_VIS_SCALE, STRIPE_PINK, 0.55 * alpha)
+      g.lineStyle(1.1 * this.visScale, STRIPE_PINK, 0.55 * alpha)
       for (let s = 1; s <= 5; s++) {
         const t = 0.12 + s * 0.13
         const q1x = ax + t * (cx2 - ax)
@@ -296,7 +300,7 @@ export class Boat {
     const footStar = this.projWorld(footStar_wx, footStar_wy, 0, cx, cy)
     const clew = this.projWorld(clew_wx, clew_wy, 0, cx, cy)
 
-    const sailSh = 2 * BOAT_VIS_SCALE
+    const sailSh = 2 * this.visScale
     g.fillStyle(0x000000, 0.12)
     for (const [fx, fy, tx, ty] of [
       [footPort.x, footPort.y, mastTop.x, mastTop.y],
@@ -391,33 +395,33 @@ export class Boat {
     )
     drawStripes(footOppA.x, footOppA.y, mastTop.x, mastTop.y, oppClew.x, oppClew.y, sailAlpha * 0.72)
 
-    g.lineStyle(1.2 * BOAT_VIS_SCALE, 0x4a3010, 0.65)
+    g.lineStyle(1.2 * this.visScale, 0x4a3010, 0.65)
     g.beginPath()
     g.moveTo(footOppA.x, footOppA.y)
     g.lineTo(footOppB.x, footOppB.y)
     g.strokePath()
 
-    g.lineStyle(2 * BOAT_VIS_SCALE, 0x4a3010, 0.85)
+    g.lineStyle(2 * this.visScale, 0x4a3010, 0.85)
     g.beginPath()
     g.moveTo(footPort.x, footPort.y)
     g.lineTo(footStar.x, footStar.y)
     g.strokePath()
 
-    g.lineStyle(2.5 * BOAT_VIS_SCALE, MAST_BODY, 1)
+    g.lineStyle(2.5 * this.visScale, MAST_BODY, 1)
     g.beginPath()
     g.moveTo(mastBase.x, mastBase.y)
     g.lineTo(mastTop.x, mastTop.y)
     g.strokePath()
-    g.lineStyle(1.5 * BOAT_VIS_SCALE, HULL_OUTLINE, 0.9)
+    g.lineStyle(1.5 * this.visScale, HULL_OUTLINE, 0.9)
     g.beginPath()
     g.moveTo(mastBase.x, mastBase.y)
     g.lineTo(mastTop.x, mastTop.y)
     g.strokePath()
 
-    const mr = 4 * BOAT_VIS_SCALE
+    const mr = 4 * this.visScale
     g.fillStyle(MAST_BODY, 1)
     g.fillCircle(mastBase.x, mastBase.y, mr)
-    g.lineStyle(1.5 * BOAT_VIS_SCALE, HULL_OUTLINE, 1)
+    g.lineStyle(1.5 * this.visScale, HULL_OUTLINE, 1)
     g.strokeCircle(mastBase.x, mastBase.y, mr)
     g.fillStyle(MAST_CAP, 1)
     g.fillCircle(mastTop.x, mastTop.y, mr * 0.55)
@@ -426,13 +430,13 @@ export class Boat {
       const dotCount = Math.min(5, Math.floor(this.speed))
       for (let i = 0; i < dotCount; i++) {
         const bowOff = this.rotatePoint(
-          hullLength / 2 + 8 * BOAT_VIS_SCALE + i * 5 * BOAT_VIS_SCALE,
+          hullLength / 2 + 8 * this.visScale + i * 5 * this.visScale,
           0,
           this.heading
         )
         const p = this.projWorld(bowOff.x, bowOff.y, 0, cx, cy)
         g.fillStyle(0xffffff, 0.5 - i * 0.08)
-        g.fillCircle(p.x, p.y, 2 * BOAT_VIS_SCALE)
+        g.fillCircle(p.x, p.y, 2 * this.visScale)
       }
     }
   }

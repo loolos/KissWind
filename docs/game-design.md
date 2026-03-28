@@ -23,7 +23,7 @@ This document describes the **as-built** gameplay, physics, wind model, visuals,
 ## 3. World and camera
 
 - The boat is drawn near the **center of the screen**; the **world scrolls** around the boat (boat-centered projection).
-- World entities (waves, debris, wind zones) use world coordinates; see **`docs/coordinate-system.md`** for the boat-centered map transform and `MAP_ZOOM`.
+- World entities (waves, debris, wind zones) use world coordinates; see **`docs/coordinate-system.md`** for the boat-centered map transform and `MAP_ZOOM_BASE`.
 
 ---
 
@@ -57,7 +57,7 @@ There is **no hard speed cap**: speed is limited by **drag balancing thrust**, n
 ### 4.4 Water drag (vector)
 
 - Speed magnitude: `speed = |v|`.
-- Drag magnitude: `K1 * speed + K2 * speed²` with **`K1 = 0.1`**, **`K2 = 0.015`**.
+- Drag magnitude: `K1 * speed + K2 * speed²` with **`K1 = 0.05`**, **`K2 = 0.015`**.
 - **Drag vector** is **opposite to velocity**:  
   `drag = -(v / |v|) * dragMag` when `|v| > ε`, else zero.
 
@@ -78,15 +78,15 @@ There is **no hard speed cap**: speed is limited by **drag balancing thrust**, n
 ### 5.1 Global wind
 
 - **`direction`:** radians, direction wind **blows toward**; slowly drifts.
-- **`strength`:** scalar; oscillates toward a sinusoidal target and is clamped to a band scaled by **`BASE_WIND_STRENGTH_MULT` (1.5)**.
+- **`strength`:** scalar; oscillates toward a sinusoidal target and is clamped to a band scaled by **`BASE_WIND`** (global base wind strength; gust/dead zones multiply this value by fixed coefficients).
 - **Direction change rate** is scaled by **`WIND_DIRECTION_CHANGE_MULT` (0.3)** relative to the internal drift target.
 
 ### 5.2 Wind zones (local patches)
 
 - Each zone is a **circle** in world space: center `(worldX, worldY)`, radius `radius`, type **`gust`** or **`dead`**.
-- **Gust:** `multiplier = 1.5` (stronger local effective wind).
+- **Gust:** `multiplier = 3.0` (stronger local effective wind vs global `strength`).
 - **Dead (“weak wind”):** `multiplier = 0.3` (weaker local effective wind).
-- Spawning is **random** around a reference point (usually the boat); distance and radius are scaled by **`MAP_ZOOM`** (see `mapConfig.ts`, `MAP_ZOOM = 20`).
+- Spawning is **random** around a reference point (usually the boat); distance and radius are scaled by **`MAP_ZOOM_BASE`** (see `mapConfig.ts`, `MAP_ZOOM_BASE = 20`).
 - Zones far from the boat are removed; the system tries to keep **2–5** active zones.
 
 ### 5.3 Effective strength at a point
@@ -102,7 +102,7 @@ This value is **`getStrengthAt(boatX, boatY)`** fed into `computeThrust`.
 
 ## 6. World rendering (`World.ts`)
 
-- Draws **ocean background**, **wave lines**, **debris**, and **wind zones** (gust vs dead styling) using the boat-centered projection and `MAP_ZOOM`.
+- Draws **ocean background**, **wave lines**, **debris**, and **wind zones** (gust vs dead styling) using the boat-centered projection and `MAP_ZOOM_BASE`.
 
 ---
 
@@ -157,4 +157,4 @@ This value is **`getStrengthAt(boatX, boatY)`** fed into `computeThrust`.
 ## 12. Design notes
 
 - The model is **arcade-style**, not a full hydrodynamics simulation: sail force is aligned with the **sail normal**, drag opposes **velocity**, and **no rudder** is modeled.
-- **Balance** is controlled mainly by `K1`, `K2`, the thrust `× 3` gain, `Wind` strength/zones, and `BASE_WIND_STRENGTH_MULT`.
+- **Balance** is controlled mainly by `K1`, `K2`, the thrust `× 3` gain, `Wind` strength/zones, and `BASE_WIND`.

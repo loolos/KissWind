@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
-import { worldToScreen } from './camera'
-import { MAP_ZOOM, viewportHalfExtents } from './mapConfig'
+import { screenToWorld, worldToScreen } from './camera'
+import { MAP_ZOOM_BASE, viewportHalfExtents } from './mapConfig'
 import { WindZone } from './Wind'
 
 /** Swell travel direction in world radians (+X = east). Not tied to wind. */
@@ -8,6 +8,13 @@ const WAVE_SWELL_DIR = Math.PI * 0.22
 
 /** World-space drift speed scale (units/s), multiplied by each line’s random speed. */
 const WAVE_DRIFT_SPEED = 1.1
+
+/** Decorative swell contours: wavelength & amplitude in world units (locked to world, not the screen). */
+const WAVE_CONTOUR_WL = 34
+const WAVE_CONTOUR_AMP = 4.2
+const WAVE_CONTOUR_SPACING = 16
+/** Horizontal strips for water tint; many + world-based color avoids obvious “screen stripes”. */
+const WATER_TINT_STRIPS = 28
 
 interface Debris {
   worldX: number
@@ -38,9 +45,9 @@ export class World {
   private waveOffset: number = 0
 
   /** World units → screen pixels (see mapConfig) */
-  readonly mapZoom: number
+  mapZoom: number
 
-  constructor(scene: Phaser.Scene, mapZoom: number = MAP_ZOOM) {
+  constructor(scene: Phaser.Scene, mapZoom: number = MAP_ZOOM_BASE) {
     this.scene = scene
     this.mapZoom = mapZoom
 
@@ -140,6 +147,86 @@ export class World {
     this.draw(windDir, zones, boatX, boatY)
   }
 
+  /** Depth tint from world Y so the base moves with the map (not glued to the screen). */
+  private waterTintFromWorldY(wy: number, boatY: number, zoom: number, viewH: number): number {
+    const span = Math.max(viewH / zoom, 90)
+    const t = Phaser.Math.Clamp(0.5 + (wy - boatY) / span * 0.5, 0, 1)
+    const stops = [
+      { r: 10, g: 32, b: 80 },
+      { r: 12, g: 38, b: 92 },
+      { r: 14, g: 48, b: 104 },
+      { r: 16, g: 58, b: 116 },
+      { r: 18, g: 68, b: 128 },
+      { r: 20, g: 80, b: 140 },
+    ]
+    const n = stops.length - 1
+    const f = t * n
+    const i0 = Math.floor(f)
+    const i1 = Math.min(i0 + 1, n)
+    const u = f - i0
+    const a = stops[i0]
+    const b = stops[i1]
+    return Phaser.Display.Color.GetColor(
+      Math.round(a.r + (b.r - a.r) * u),
+      Math.round(a.g + (b.g - a.g) * u),
+      Math.round(a.b + (b.b - a.b) * u)
+    )
+  }
+
+  /**
+   * Swell-parallel stripes in **world** coordinates: rest position is fixed on the perpendicular
+   * axis (pRest = line × spacing). Undulation is only from trig — spatial phase `k*a` uses world
+   * along-coordinate `a`; time enters as angle offsets via `waveOffset`, not by moving pRest.
+   * W = a·S + p·P with S = swell direction, P = (−sin, cos) ⟂ S.
+   */
+  private drawWaterWaveContours(
+    boatX: number,
+    boatY: number,
+    z: number,
+    w: number,
+    h: number
+  ): void {
+    const g = this.waterGraphics
+    const margin = 1.35
+    const spanAlong = (Math.max(w, h) / z) * margin
+    const spanPerp = spanAlong
+    const steps = Math.min(96, Math.max(40, Math.ceil(spanAlong * 0.72)))
+    const cosS = Math.cos(WAVE_SWELL_DIR)
+    const sinS = Math.sin(WAVE_SWELL_DIR)
+    const k = (Math.PI * 2) / WAVE_CONTOUR_WL
+    const k2 = k * 1.85
+
+    const aCenter = boatX * cosS + boatY * sinS
+    const pBoat = -boatX * sinS + boatY * cosS
+    const lineMin = Math.floor((pBoat - spanPerp) / WAVE_CONTOUR_SPACING) - 2
+    const lineMax = Math.ceil((pBoat + spanPerp) / WAVE_CONTOUR_SPACING) + 2
+
+    const timeAng1 = this.waveOffset * 0.38
+    const timeAng2 = this.waveOffset * 0.22
+
+    for (let line = lineMin; line <= lineMax; line++) {
+      const pRest = line * WAVE_CONTOUR_SPACING
+      const linePhase = line * 0.31
+      const alpha = 0.06 + (Math.abs(line) % 3) * 0.018
+
+      g.lineStyle(1.25, 0x7ab0dc, alpha)
+      g.beginPath()
+      for (let s = 0; s <= steps; s++) {
+        const a = aCenter - spanAlong + (2 * spanAlong * s) / steps
+        const w1 = Math.sin(a * k + timeAng1 + linePhase) * WAVE_CONTOUR_AMP
+        const w2 =
+          Math.sin(a * k2 + timeAng2 + linePhase * 1.7) * (WAVE_CONTOUR_AMP * 0.28)
+        const p = pRest + w1 + w2
+        const wx = a * cosS - p * sinS
+        const wy = a * sinS + p * cosS
+        const scr = worldToScreen(wx, wy, boatX, boatY, z, w, h)
+        if (s === 0) g.moveTo(scr.sx, scr.sy)
+        else g.lineTo(scr.sx, scr.sy)
+      }
+      g.strokePath()
+    }
+  }
+
   private draw(windDir: number, zones: WindZone[], boatX: number, boatY: number): void {
     const w = this.scene.scale.width
     const h = this.scene.scale.height
@@ -148,20 +235,17 @@ export class World {
     // Draw water background
     this.waterGraphics.clear()
 
-    const gradColors = [
-      { r: 10, g: 32, b: 80 },
-      { r: 12, g: 38, b: 92 },
-      { r: 14, g: 48, b: 104 },
-      { r: 16, g: 58, b: 116 },
-      { r: 18, g: 68, b: 128 },
-      { r: 20, g: 80, b: 140 },
-    ]
-    for (let i = 0; i < 6; i++) {
-      const c = gradColors[i]
-      const color = Phaser.Display.Color.GetColor(c.r, c.g, c.b)
+    for (let i = 0; i < WATER_TINT_STRIPS; i++) {
+      const y0 = (i / WATER_TINT_STRIPS) * h
+      const y1 = ((i + 1) / WATER_TINT_STRIPS) * h + 1
+      const midY = (y0 + y1) * 0.5
+      const { wy } = screenToWorld(w * 0.5, midY, boatX, boatY, z, w, h)
+      const color = this.waterTintFromWorldY(wy, boatY, z, h)
       this.waterGraphics.fillStyle(color, 1)
-      this.waterGraphics.fillRect(0, i * (h / 6), w, h / 6 + 1)
+      this.waterGraphics.fillRect(0, y0, w, y1 - y0)
     }
+
+    this.drawWaterWaveContours(boatX, boatY, z, w, h)
 
     for (const wl of this.waveLines) {
       const perpX = Math.cos(WAVE_SWELL_DIR + Math.PI / 2)
@@ -317,6 +401,10 @@ export class World {
         g.strokePath()
         break
     }
+  }
+
+  setMapZoom(z: number): void {
+    this.mapZoom = z
   }
 
   resize(boatX: number, boatY: number): void {

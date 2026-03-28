@@ -4,7 +4,7 @@
 
 This document defines a **single world map coordinate system** for all gameplay and rendering. The player’s boat is **fixed at the center of the screen**; every other entity is positioned in **world space** and appears to move **relative to the boat** through a consistent **world → screen** transform.
 
-The goal is to remove ad-hoc mixing of screen pixels, accumulated offsets, and world units, and to make zoom (`MAP_ZOOM`), spawning, and physics easier to reason about.
+The goal is to remove ad-hoc mixing of screen pixels, accumulated offsets, and world units, and to make zoom (`MAP_ZOOM_BASE`), spawning, and physics easier to reason about.
 
 ---
 
@@ -42,7 +42,7 @@ Let:
 
 - `(boatX, boatY)` — boat position in world space (from physics).
 - `(W, H)` — viewport width and height in pixels.
-- `zoom` — `MAP_ZOOM` (world units → screen pixels for horizontal/vertical displacement).
+- `zoom` — `MAP_ZOOM_BASE` (world units → screen pixels for horizontal/vertical displacement).
 
 ### 3.1 World → screen (for any world point)
 
@@ -102,7 +102,7 @@ Therefore:
 
 ---
 
-## 6. Zoom (`MAP_ZOOM`)
+## 6. Zoom (`MAP_ZOOM_BASE`)
 
 - `zoom` scales **world displacement** to **pixels**: larger `zoom` = more pixels per world unit (closer “camera”).
 - **Radii and distances** in world space should be authored so that `radius * zoom` yields the desired **on-screen** size (or use a single `WORLD_PER_PIXEL = 1/zoom` when defining content).

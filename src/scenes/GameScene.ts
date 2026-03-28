@@ -12,6 +12,7 @@ import {
   GREEN_ZONE_HALF_WIDTH,
   YELLOW_ZONE_OUTER_HALF_WIDTH,
 } from '../game/Physics'
+import { MAP_ZOOM_LEVELS } from '../game/mapConfig'
 
 const GAME_DURATION = 180  // seconds
 
@@ -49,6 +50,13 @@ export class GameScene extends Phaser.Scene {
   private currentSpeed: number = 0
   private currentHeading: number = 0
 
+  /** Index into MAP_ZOOM_LEVELS; 0 = 20 (default). */
+  private mapZoomIndex: number = 0
+  private zoomMinusGfx!: Phaser.GameObjects.Graphics
+  private zoomPlusGfx!: Phaser.GameObjects.Graphics
+  private zoomMinusZone!: Phaser.GameObjects.Zone
+  private zoomPlusZone!: Phaser.GameObjects.Zone
+
   // Scoring: accumulated distance in game-units (convert to "meters" for display)
   private METERS_PER_UNIT = 2
 
@@ -68,10 +76,10 @@ export class GameScene extends Phaser.Scene {
     this.timeLeft = GAME_DURATION
     this.totalDistance = 0
     this.isDragging = false
+    this.mapZoomIndex = 0
 
     // Initialize systems
     this.wind = new Wind()
-    this.wind.spawnInitialZones(w, h)
     this.world = new World(this)
     this.boat = new Boat(this)
 
@@ -91,11 +99,15 @@ export class GameScene extends Phaser.Scene {
     // Initial sail angle: slightly off the wind for a good start
     this.boat.sailAngle = this.wind.direction + Math.PI * 0.6
 
+    this.wind.spawnInitialZones(w, h, 0, 0, this.currentHeading)
+
     // HUD layer
     this.hudGraphics = this.add.graphics()
     this.hudGraphics.setDepth(20)
 
     this.createHUD()
+    this.createZoomControls()
+    this.applyMapZoom()
     this.setupInput()
 
     // Handle resize
@@ -107,8 +119,8 @@ export class GameScene extends Phaser.Scene {
     const h = this.scale.height
     const fontSize = Math.max(14, Math.min(24, w * 0.04))
 
-    // Timer (top-left)
-    this.timerText = this.add.text(16, 16, `TIME: ${GAME_DURATION}`, {
+    // Timer (top-left; offset past map zoom buttons)
+    this.timerText = this.add.text(108, 16, `TIME: ${GAME_DURATION}`, {
       fontSize: fontSize + 'px',
       fontFamily: 'Georgia, serif',
       color: '#ffffff',
@@ -129,7 +141,7 @@ export class GameScene extends Phaser.Scene {
     this.scoreText.setDepth(25)
 
     // Speed indicator (below timer)
-    this.speedText = this.add.text(16, 16 + fontSize + 8, 'SPD: 0.0', {
+    this.speedText = this.add.text(108, 16 + fontSize + 8, 'SPD: 0.0', {
       fontSize: Math.floor(fontSize * 0.8) + 'px',
       fontFamily: 'Arial, sans-serif',
       color: '#aaddff',
@@ -139,13 +151,18 @@ export class GameScene extends Phaser.Scene {
     this.speedText.setDepth(25)
 
     // Acceleration indicator text (below speed)
-    this.accelText = this.add.text(16, 16 + fontSize + 8 + Math.floor(fontSize * 0.8) + 6, 'ACC: 0.00', {
-      fontSize: Math.floor(fontSize * 0.8) + 'px',
-      fontFamily: 'Arial, sans-serif',
-      color: '#aaddff',
-      stroke: '#000033',
-      strokeThickness: 3,
-    })
+    this.accelText = this.add.text(
+      108,
+      16 + fontSize + 8 + Math.floor(fontSize * 0.8) + 6,
+      'ACC: 0.00',
+      {
+        fontSize: Math.floor(fontSize * 0.8) + 'px',
+        fontFamily: 'Arial, sans-serif',
+        color: '#aaddff',
+        stroke: '#000033',
+        strokeThickness: 3,
+      }
+    )
     this.accelText.setDepth(25)
 
     // Wind instrument label/value (top-center, below compass)
@@ -160,6 +177,87 @@ export class GameScene extends Phaser.Scene {
     this.windText.setDepth(25)
   }
 
+  /** Upper-left map zoom: − = zoom out (smaller coefficient), + = zoom in. */
+  private createZoomControls(): void {
+    const btnW = 40
+    const btnH = 30
+    const gap = 6
+    const x0 = 12
+    const y0 = 12
+
+    const drawBtn = (
+      g: Phaser.GameObjects.Graphics,
+      x: number,
+      y: number,
+      hovered: boolean
+    ): void => {
+      g.clear()
+      const fill = hovered ? 0x335588 : 0x1a3a5a
+      g.fillStyle(fill, 0.92)
+      g.fillRoundedRect(x, y, btnW, btnH, 6)
+      g.lineStyle(1.5, 0x66aacc, 0.85)
+      g.strokeRoundedRect(x, y, btnW, btnH, 6)
+    }
+
+    const mk = (
+      x: number,
+      label: string,
+      deltaIndex: number
+    ): { g: Phaser.GameObjects.Graphics; z: Phaser.GameObjects.Zone } => {
+      const g = this.add.graphics().setDepth(26)
+      drawBtn(g, x, y0, false)
+      this.add
+        .text(x + btnW / 2, y0 + btnH / 2, label, {
+          fontSize: '20px',
+          fontFamily: 'Arial, sans-serif',
+          color: '#ffffff',
+        })
+        .setOrigin(0.5)
+        .setDepth(27)
+      const z = this.add
+        .zone(x + btnW / 2, y0 + btnH / 2, btnW + 10, btnH + 10)
+        .setInteractive({ useHandCursor: true })
+        .setDepth(28)
+      z.on('pointerover', () => drawBtn(g, x, y0, true))
+      z.on('pointerout', () => drawBtn(g, x, y0, false))
+      z.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        pointer.event.stopPropagation()
+        this.stepMapZoom(deltaIndex)
+      })
+      return { g, z }
+    }
+
+    const a = mk(x0, '-', 1)
+    const b = mk(x0 + btnW + gap, '+', -1)
+    this.zoomMinusGfx = a.g
+    this.zoomMinusZone = a.z
+    this.zoomPlusGfx = b.g
+    this.zoomPlusZone = b.z
+  }
+
+  private stepMapZoom(deltaIndex: number): void {
+    if (this.gameOver) return
+    const max = MAP_ZOOM_LEVELS.length - 1
+    const next = Phaser.Math.Clamp(this.mapZoomIndex + deltaIndex, 0, max)
+    if (next === this.mapZoomIndex) return
+    this.mapZoomIndex = next
+    this.applyMapZoom()
+  }
+
+  private applyMapZoom(): void {
+    const z = MAP_ZOOM_LEVELS[this.mapZoomIndex]
+    this.world.setMapZoom(z)
+    this.wind.setMapZoom(z)
+    this.world.resize(this.physState.posX, this.physState.posY)
+  }
+
+  private isPointerOverMapZoom(pointer: Phaser.Input.Pointer): boolean {
+    return (
+      (this.zoomMinusZone && this.zoomMinusZone.getBounds().contains(pointer.x, pointer.y)) ||
+      (this.zoomPlusZone && this.zoomPlusZone.getBounds().contains(pointer.x, pointer.y))
+    )
+  }
+
   private setupInput(): void {
     const canvas = this.sys.canvas
 
@@ -172,6 +270,7 @@ export class GameScene extends Phaser.Scene {
 
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
     if (this.gameOver) return
+    if (this.isPointerOverMapZoom(pointer)) return
     this.isDragging = true
     this.dragStartX = pointer.x
     this.dragStartY = pointer.y
@@ -211,7 +310,14 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Update wind
-    this.wind.update(dt, this.physState.posX, this.physState.posY, this.scale.width, this.scale.height)
+    this.wind.update(
+      dt,
+      this.physState.posX,
+      this.physState.posY,
+      this.scale.width,
+      this.scale.height,
+      this.currentHeading
+    )
 
     // Get effective wind strength at boat position
     const effectiveStrength = this.wind.getStrengthAt(this.physState.posX, this.physState.posY)
@@ -245,7 +351,7 @@ export class GameScene extends Phaser.Scene {
     this.totalDistance += Math.sqrt(dx * dx + dy * dy)
 
     // Update boat visual
-    this.boat.update(dt, this.currentHeading, this.currentSpeed, this.lastThrust.quality)
+    this.boat.update(dt, this.currentHeading, this.currentSpeed, this.lastThrust.quality, this.world.mapZoom)
 
     // World map: all entities use world coords; boat-centered projection in World
     this.world.update(dt, this.physState.posX, this.physState.posY, this.wind.direction, effectiveStrength, this.wind.zones)
@@ -283,7 +389,7 @@ export class GameScene extends Phaser.Scene {
     // Background panels
     const panelAlpha = 0.45
     this.hudGraphics.fillStyle(0x000022, panelAlpha)
-    this.hudGraphics.fillRoundedRect(8, 8, 200, 80, 8)
+    this.hudGraphics.fillRoundedRect(8, 8, 220, 80, 8)
 
     this.hudGraphics.fillStyle(0x000022, panelAlpha)
     this.hudGraphics.fillRoundedRect(w - 120, 8, 112, 36, 8)
@@ -293,9 +399,9 @@ export class GameScene extends Phaser.Scene {
     this.windText.setText(`WIND ${this.currentWindStrength.toFixed(2)}`)
 
     // Speed bar (bottom of left panel)
-    const barX = 16
+    const barX = 108
     const barY = 80
-    const barW = 180
+    const barW = 112
     const barH = 8
     const speedFrac = Math.min(1, this.currentSpeed / this.HUD_SPEED_BAR_REF)
 
