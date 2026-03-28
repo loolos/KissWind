@@ -21,10 +21,11 @@ const initialSize = getViewportSize()
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
   backgroundColor: '#0a2040',
+  parent: 'game-root',
   scene: [BootScene, GameScene],
   scale: {
     mode: Phaser.Scale.RESIZE,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
+    autoCenter: Phaser.Scale.NO_CENTER,
     width: initialSize.width,
     height: initialSize.height,
   },
