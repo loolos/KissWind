@@ -73,9 +73,11 @@ export class BootScene extends Phaser.Scene {
       strokeThickness: 3,
     }).setOrigin(0.5).setDepth(5)
 
+    this.drawHudLegend(w, h)
+
     const instrSize = Math.min(w * 0.03, 16)
     this.add.text(
-      w / 2, h * 0.78,
+      w / 2, h * 0.80,
       'Drag to rotate the sail\nFind the sweet spot for maximum speed\n180 seconds to sail as far as possible',
       {
         fontSize: instrSize + 'px',
@@ -180,6 +182,145 @@ export class BootScene extends Phaser.Scene {
     this.btnBg.fillRoundedRect(this.btnX + 2, this.btnY + 2, this.btnW - 4, this.btnH / 2 - 2, 8)
     this.btnBg.lineStyle(2, borderColor, 1)
     this.btnBg.strokeRoundedRect(this.btnX, this.btnY, this.btnW, this.btnH, 10)
+  }
+
+  private drawHudLegend(w: number, h: number): void {
+    const panelW = Math.min(w * 0.92, 560)
+    const panelH = Math.min(h * 0.24, 220)
+    const panelX = (w - panelW) / 2
+    const panelY = h * 0.57
+
+    const panelG = this.add.graphics().setDepth(5)
+    panelG.fillStyle(0x001933, 0.62)
+    panelG.fillRoundedRect(panelX, panelY, panelW, panelH, 12)
+    panelG.lineStyle(1.5, 0x4a88c9, 0.8)
+    panelG.strokeRoundedRect(panelX, panelY, panelW, panelH, 12)
+
+    const titleSize = Math.max(14, Math.min(22, w * 0.032))
+    this.add.text(panelX + panelW / 2, panelY + 14, 'HUD GUIDE', {
+      fontSize: `${titleSize}px`,
+      fontFamily: 'Georgia, serif',
+      color: '#d8eeff',
+      stroke: '#0a1f3b',
+      strokeThickness: 2,
+    }).setOrigin(0.5, 0).setDepth(6)
+
+    this.drawCompassLegend(panelX + panelW * 0.24, panelY + panelH * 0.56, panelW, panelH)
+    this.drawSailDialLegend(panelX + panelW * 0.73, panelY + panelH * 0.56, panelW, panelH)
+  }
+
+  private drawCompassLegend(cx: number, cy: number, panelW: number, panelH: number): void {
+    const g = this.add.graphics().setDepth(6)
+    const r = Math.min(panelW * 0.085, panelH * 0.28)
+
+    g.fillStyle(0x001133, 0.9)
+    g.fillCircle(cx, cy, r + 5)
+    g.lineStyle(1.5, 0x4488aa, 0.7)
+    g.strokeCircle(cx, cy, r + 5)
+
+    const drawArrow = (angle: number, len: number, color: number, alpha: number, width: number): void => {
+      const dx = Math.cos(angle)
+      const dy = Math.sin(angle)
+      g.lineStyle(width, color, alpha)
+      g.beginPath()
+      g.moveTo(cx - dx * len, cy - dy * len)
+      g.lineTo(cx + dx * len, cy + dy * len)
+      g.strokePath()
+
+      const head = 5
+      const left = angle + Math.PI * 0.75
+      const right = angle - Math.PI * 0.75
+      const tipX = cx + dx * len
+      const tipY = cy + dy * len
+      g.fillStyle(color, alpha)
+      g.beginPath()
+      g.moveTo(tipX, tipY)
+      g.lineTo(tipX + Math.cos(left) * head, tipY + Math.sin(left) * head)
+      g.lineTo(tipX + Math.cos(right) * head, tipY + Math.sin(right) * head)
+      g.closePath()
+      g.fillPath()
+    }
+
+    drawArrow(-0.2, r * 0.55, 0xffffff, 0.75, 2)
+    drawArrow(0.65, r * 0.8, 0x55dde8, 0.95, 2.4)
+    drawArrow(-1.1, r * 0.9, 0x4488ff, 0.95, 2.8)
+    g.fillStyle(0xffffff, 1)
+    g.fillCircle(cx, cy, 2.5)
+
+    const fs = Math.max(11, Math.min(14, panelW * 0.025))
+    const tx = cx + r + 18
+    this.add.text(tx, cy - 22, 'White: Wind', {
+      fontSize: `${fs}px`,
+      fontFamily: 'Arial, sans-serif',
+      color: '#f1f6ff',
+    }).setDepth(6)
+    this.add.text(tx, cy - 4, 'Blue: Boat heading', {
+      fontSize: `${fs}px`,
+      fontFamily: 'Arial, sans-serif',
+      color: '#9fc8ff',
+    }).setDepth(6)
+    this.add.text(tx, cy + 14, 'Aqua: Water current', {
+      fontSize: `${fs}px`,
+      fontFamily: 'Arial, sans-serif',
+      color: '#8eeff7',
+    }).setDepth(6)
+  }
+
+  private drawSailDialLegend(cx: number, cy: number, panelW: number, panelH: number): void {
+    const g = this.add.graphics().setDepth(6)
+    const r = Math.min(panelW * 0.09, panelH * 0.29)
+
+    g.fillStyle(0x001133, 0.85)
+    g.fillCircle(cx, cy, r + 7)
+
+    g.lineStyle(6, 0xffdd44, 0.35)
+    g.beginPath()
+    g.arc(cx, cy, r, -0.8, 0.8)
+    g.strokePath()
+
+    g.lineStyle(6, 0x44ff88, 0.65)
+    g.beginPath()
+    g.arc(cx, cy, r, -0.34, 0.34)
+    g.strokePath()
+
+    g.fillStyle(0x44aadd, 0.25)
+    g.beginPath()
+    g.moveTo(cx, cy)
+    g.arc(cx, cy, r - 5, 0.7, 2.2)
+    g.closePath()
+    g.fillPath()
+
+    const indicatorAngle = 0.2
+    const sx = cx + Math.cos(indicatorAngle) * r
+    const sy = cy + Math.sin(indicatorAngle) * r
+    g.lineStyle(1.4, 0x44ff88, 0.9)
+    g.beginPath()
+    g.moveTo(cx, cy)
+    g.lineTo(sx, sy)
+    g.strokePath()
+    g.fillStyle(0x44ff88, 1)
+    g.fillCircle(sx, sy, 4)
+
+    g.lineStyle(1.2, 0x4a88aa, 0.65)
+    g.strokeCircle(cx, cy, r)
+
+    const fs = Math.max(11, Math.min(14, panelW * 0.024))
+    const tx = cx + r + 16
+    this.add.text(tx, cy - 22, 'Green arc: Best sail angle', {
+      fontSize: `${fs}px`,
+      fontFamily: 'Arial, sans-serif',
+      color: '#8effbd',
+    }).setDepth(6)
+    this.add.text(tx, cy - 4, 'Yellow arc: Acceptable angle', {
+      fontSize: `${fs}px`,
+      fontFamily: 'Arial, sans-serif',
+      color: '#ffe188',
+    }).setDepth(6)
+    this.add.text(tx, cy + 14, 'Center fan: Boat speed', {
+      fontSize: `${fs}px`,
+      fontFamily: 'Arial, sans-serif',
+      color: '#9dd8ff',
+    }).setDepth(6)
   }
 
   private drawTitleBoat(g: Phaser.GameObjects.Graphics, cx: number, cy: number): void {
