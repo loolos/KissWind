@@ -13,6 +13,7 @@ import {
   YELLOW_ZONE_OUTER_HALF_WIDTH,
 } from '../game/Physics'
 import { MAP_ZOOM_LEVELS } from '../game/mapConfig'
+import { AmbientMusic } from '../game/AmbientMusic'
 
 const GAME_DURATION = 180  // seconds
 
@@ -36,7 +37,7 @@ export class GameScene extends Phaser.Scene {
   private hudGraphics!: Phaser.GameObjects.Graphics
   private timerText!: Phaser.GameObjects.Text
   private scoreText!: Phaser.GameObjects.Text
-  private speedText!: Phaser.GameObjects.Text
+  private speedGaugeText!: Phaser.GameObjects.Text
   private accelText!: Phaser.GameObjects.Text
   private windText!: Phaser.GameObjects.Text
 
@@ -52,10 +53,14 @@ export class GameScene extends Phaser.Scene {
 
   /** Index into MAP_ZOOM_LEVELS; 0 = 20 (default). */
   private mapZoomIndex: number = 0
+  /** Baseline span (px) while two fingers are down; 0 = not pinching. */
+  private pinchBaseDist: number = 0
   private zoomMinusGfx!: Phaser.GameObjects.Graphics
   private zoomPlusGfx!: Phaser.GameObjects.Graphics
   private zoomMinusZone!: Phaser.GameObjects.Zone
   private zoomPlusZone!: Phaser.GameObjects.Zone
+
+  private ambient!: AmbientMusic
 
   // Scoring: accumulated distance in game-units (convert to "meters" for display)
   private METERS_PER_UNIT = 2
@@ -77,6 +82,7 @@ export class GameScene extends Phaser.Scene {
     this.totalDistance = 0
     this.isDragging = false
     this.mapZoomIndex = 0
+    this.pinchBaseDist = 0
 
     // Initialize systems
     this.wind = new Wind()
@@ -110,6 +116,12 @@ export class GameScene extends Phaser.Scene {
     this.applyMapZoom()
     this.setupInput()
 
+    this.ambient = new AmbientMusic()
+    this.ambient.start()
+    this.input.once('pointerdown', () => {
+      this.ambient.resume()
+    })
+
     // Handle resize
     this.scale.on('resize', this.onResize, this)
   }
@@ -140,29 +152,25 @@ export class GameScene extends Phaser.Scene {
     this.scoreText.setOrigin(1, 0)
     this.scoreText.setDepth(25)
 
-    // Speed indicator (below timer)
-    this.speedText = this.add.text(108, 16 + fontSize + 8, 'SPD: 0.0', {
+    // Boat speed readout (center of bottom sail trim dial)
+    this.speedGaugeText = this.add.text(w / 2, h - 110, '0.0', {
+      fontSize: Math.max(14, Math.min(22, w * 0.038)) + 'px',
+      fontFamily: 'Georgia, serif',
+      color: '#e8f4ff',
+      stroke: '#001122',
+      strokeThickness: 4,
+    })
+    this.speedGaugeText.setOrigin(0.5)
+    this.speedGaugeText.setDepth(25)
+
+    // Acceleration indicator text (below timer)
+    this.accelText = this.add.text(108, 16 + fontSize + 8, 'ACC: 0.00', {
       fontSize: Math.floor(fontSize * 0.8) + 'px',
       fontFamily: 'Arial, sans-serif',
       color: '#aaddff',
       stroke: '#000033',
       strokeThickness: 3,
     })
-    this.speedText.setDepth(25)
-
-    // Acceleration indicator text (below speed)
-    this.accelText = this.add.text(
-      108,
-      16 + fontSize + 8 + Math.floor(fontSize * 0.8) + 6,
-      'ACC: 0.00',
-      {
-        fontSize: Math.floor(fontSize * 0.8) + 'px',
-        fontFamily: 'Arial, sans-serif',
-        color: '#aaddff',
-        stroke: '#000033',
-        strokeThickness: 3,
-      }
-    )
     this.accelText.setDepth(25)
 
     // Wind instrument label/value (top-center, below compass)
@@ -259,18 +267,69 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupInput(): void {
-    const canvas = this.sys.canvas
-
-    // Mouse
     this.input.on('pointerdown', this.onPointerDown, this)
     this.input.on('pointermove', this.onPointerMove, this)
     this.input.on('pointerup', this.onPointerUp, this)
     this.input.on('pointerupoutside', this.onPointerUp, this)
+    this.input.on(Phaser.Input.Events.POINTER_WHEEL, this.onPointerWheel, this)
+  }
+
+  private onPointerWheel(
+    _pointer: Phaser.Input.Pointer,
+    _gameObjects: Phaser.GameObjects.GameObject[],
+    _deltaX: number,
+    deltaY: number,
+    _deltaZ: number
+  ): void {
+    if (this.gameOver) return
+    if (deltaY === 0) return
+    // Scroll down (deltaY > 0) → zoom out (larger map index); scroll up → zoom in.
+    this.stepMapZoom(deltaY > 0 ? 1 : -1)
+  }
+
+  /** Touch pointers currently down (excludes mouse). */
+  private activeTouchPointers(): Phaser.Input.Pointer[] {
+    return this.input.manager.pointers.filter((p) => p.active && p.isDown && p.wasTouch)
+  }
+
+  private touchPinchDistance(): number {
+    const pts = this.activeTouchPointers().sort((a, b) => a.identifier - b.identifier)
+    if (pts.length < 2) return 0
+    const [a, b] = pts
+    return Phaser.Math.Distance.Between(a.x, a.y, b.x, b.y)
+  }
+
+  private updatePinchZoom(): void {
+    const touches = this.activeTouchPointers()
+    if (touches.length < 2) {
+      this.pinchBaseDist = 0
+      return
+    }
+    const dist = this.touchPinchDistance()
+    if (dist < 24) return
+    if (this.pinchBaseDist <= 0) {
+      this.pinchBaseDist = dist
+      return
+    }
+    const ratio = dist / this.pinchBaseDist
+    if (ratio > 1.12) {
+      this.stepMapZoom(-1)
+      this.pinchBaseDist = dist
+    } else if (ratio < 0.88) {
+      this.stepMapZoom(1)
+      this.pinchBaseDist = dist
+    }
   }
 
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
     if (this.gameOver) return
     if (this.isPointerOverMapZoom(pointer)) return
+    const touches = this.activeTouchPointers()
+    if (touches.length >= 2) {
+      this.isDragging = false
+      this.pinchBaseDist = this.touchPinchDistance()
+      return
+    }
     this.isDragging = true
     this.dragStartX = pointer.x
     this.dragStartY = pointer.y
@@ -278,7 +337,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   private onPointerMove(pointer: Phaser.Input.Pointer): void {
-    if (!this.isDragging || this.gameOver) return
+    if (this.gameOver) return
+    if (this.activeTouchPointers().length >= 2) {
+      this.updatePinchZoom()
+      return
+    }
+    if (!this.isDragging) return
 
     const cx = this.scale.width / 2
     const cy = this.scale.height / 2
@@ -294,12 +358,18 @@ export class GameScene extends Phaser.Scene {
 
   private onPointerUp(_pointer: Phaser.Input.Pointer): void {
     this.isDragging = false
+    if (this.activeTouchPointers().length < 2) {
+      this.pinchBaseDist = 0
+    }
   }
 
   update(time: number, delta: number): void {
-    if (this.gameOver) return
-
     const dt = Math.min(delta / 1000, 0.05)  // cap at 50ms
+
+    this.ambient.setBoatSpeed(this.currentSpeed)
+    this.ambient.update(dt)
+
+    if (this.gameOver) return
 
     // Update timer
     this.timeLeft -= dt
@@ -374,9 +444,6 @@ export class GameScene extends Phaser.Scene {
     const meters = Math.floor(this.totalDistance * this.METERS_PER_UNIT)
     this.scoreText.setText(`${meters}m`)
 
-    // Speed
-    this.speedText.setText(`SPD: ${this.currentSpeed.toFixed(1)}`)
-
     // Acceleration (specific value applied to boat speed each second)
     const accelColor =
       this.currentAcceleration > 0.05 ? '#44ff88' : this.currentAcceleration < -0.05 ? '#ff6644' : '#aaddff'
@@ -388,8 +455,10 @@ export class GameScene extends Phaser.Scene {
 
     // Background panels
     const panelAlpha = 0.45
+    const hudFs = Math.max(14, Math.min(24, w * 0.04))
+    const leftPanelH = 16 + hudFs + 8 + Math.floor(hudFs * 0.8) + 12
     this.hudGraphics.fillStyle(0x000022, panelAlpha)
-    this.hudGraphics.fillRoundedRect(8, 8, 220, 80, 8)
+    this.hudGraphics.fillRoundedRect(8, 8, 220, leftPanelH, 8)
 
     this.hudGraphics.fillStyle(0x000022, panelAlpha)
     this.hudGraphics.fillRoundedRect(w - 120, 8, 112, 36, 8)
@@ -398,19 +467,15 @@ export class GameScene extends Phaser.Scene {
     this.drawWindCompass(w / 2, 44, this.wind.direction, this.currentHeading, this.currentWindStrength)
     this.windText.setText(`WIND ${this.currentWindStrength.toFixed(2)}`)
 
-    // Speed bar (bottom of left panel)
-    const barX = 108
-    const barY = 80
-    const barW = 112
-    const barH = 8
-    const speedFrac = Math.min(1, this.currentSpeed / this.HUD_SPEED_BAR_REF)
-
-    this.hudGraphics.fillStyle(0x002244, 0.8)
-    this.hudGraphics.fillRoundedRect(barX, barY, barW, barH, 4)
-
-    const barColor = speedFrac > 0.7 ? 0x44ff88 : speedFrac > 0.4 ? 0x44aaff : 0x4466ff
-    this.hudGraphics.fillStyle(barColor, 0.9)
-    this.hudGraphics.fillRoundedRect(barX, barY, barW * speedFrac, barH, 4)
+    const sailCx = w / 2
+    const sailCy = h - 110
+    const speedFracHud = Math.min(1, this.currentSpeed / this.HUD_SPEED_BAR_REF)
+    const digColor =
+      speedFracHud > 0.7 ? '#66ffaa' : speedFracHud > 0.4 ? '#88d4ff' : '#c8e8ff'
+    this.speedGaugeText.setColor(digColor)
+    this.speedGaugeText.setText(this.currentSpeed.toFixed(1))
+    this.speedGaugeText.setPosition(sailCx, sailCy)
+    this.speedGaugeText.setFontSize(`${Math.max(12, Math.min(20, w * 0.034))}px`)
 
     // Timer bar at bottom of screen
     const timerFrac = this.timeLeft / GAME_DURATION
@@ -421,8 +486,8 @@ export class GameScene extends Phaser.Scene {
     this.hudGraphics.fillStyle(timerColor2, 0.9)
     this.hudGraphics.fillRect(0, h - timerBarH - 2, w * timerFrac, timerBarH + 2)
 
-    // Sail angle hint arc (bottom-center), scaled up 2x
-    this.drawSailHint(w / 2, h - 110)
+    // Sail angle hint arc (bottom-center); speed shown as central pie sector inside same dial
+    this.drawSailHint(sailCx, sailCy)
   }
 
   private drawWindCompass(cx: number, cy: number, windDir: number, heading: number, windStrength: number): void {
@@ -510,6 +575,22 @@ export class GameScene extends Phaser.Scene {
       r * 2 + 12 * scale,
       8 * scale
     )
+
+    // Speed: pie sector from dial center; opening angle ∝ speed (drawn under zone arcs)
+    const speedFrac = Math.min(1, this.currentSpeed / this.HUD_SPEED_BAR_REF)
+    if (speedFrac > 1e-5) {
+      const maxSweep = Math.PI * 1.4
+      const sweep = speedFrac * maxSweep
+      const startA = Math.PI * 0.62
+      const sectorR = r - 5 * scale
+      const c = speedFrac > 0.7 ? 0x44cc88 : speedFrac > 0.4 ? 0x44aadd : 0x5588cc
+      g.fillStyle(c, 0.3)
+      g.beginPath()
+      g.moveTo(cx, cy)
+      g.arc(cx, cy, sectorR, startA, startA + sweep, false)
+      g.closePath()
+      g.fillPath()
+    }
 
     // Arcs match Physics zones: green 45° total, ±45° yellow bands each side
     const windDir = this.wind.direction
@@ -715,6 +796,9 @@ export class GameScene extends Phaser.Scene {
     if (this.windText) {
       this.windText.setPosition(w / 2, 82)
     }
+    if (this.speedGaugeText) {
+      this.speedGaugeText.setPosition(w / 2, h - 110)
+    }
 
     if (this.world) {
       this.world.resize(this.physState.posX, this.physState.posY)
@@ -723,6 +807,12 @@ export class GameScene extends Phaser.Scene {
 
   shutdown(): void {
     this.scale.off('resize', this.onResize, this)
+    this.input.off('pointerdown', this.onPointerDown, this)
+    this.input.off('pointermove', this.onPointerMove, this)
+    this.input.off('pointerup', this.onPointerUp, this)
+    this.input.off('pointerupoutside', this.onPointerUp, this)
+    this.input.off(Phaser.Input.Events.POINTER_WHEEL, this.onPointerWheel, this)
+    if (this.ambient) this.ambient.destroy()
     if (this.boat) this.boat.destroy()
     if (this.world) this.world.destroy()
   }

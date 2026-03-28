@@ -14,6 +14,8 @@ const config: Phaser.Types.Core.GameConfig = {
   },
   input: {
     touch: true,
+    /** Two-finger pinch needs at least two simultaneous touch pointers. */
+    activePointers: 3,
   },
   render: {
     preserveDrawingBuffer: true,
