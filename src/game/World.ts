@@ -23,7 +23,12 @@ interface Debris {
   size: number
   rotation: number
   rotSpeed: number
+  /** Channel-style two-digit mark (buoy only). */
+  buoyMark?: number
 }
+
+/** 7-segment patterns: bits a,b,c,d,e,f,g = 1,2,4,8,16,32,64 */
+const BUOY_SEG7: number[] = [0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x7b]
 
 interface WaveLine {
   worldX: number
@@ -74,17 +79,26 @@ export class World {
 
     const debrisTypes: Array<'buoy' | 'plank' | 'barrel'> = ['buoy', 'plank', 'barrel']
     const colors = [0xff6633, 0xaa8855, 0x886644, 0xffaa33, 0xcc4422]
+    const buoyColors = [0xdc2a2a, 0xe83333, 0xd42222, 0xee3a2e, 0xc42828]
 
     for (let i = 0; i < count; i++) {
-      this.debris.push({
+      const type = debrisTypes[Math.floor(Math.random() * debrisTypes.length)]
+      const palette = type === 'buoy' ? buoyColors : colors
+      const piece: Debris = {
         worldX: boatX + (Math.random() * 2 - 1) * halfW,
         worldY: boatY + (Math.random() * 2 - 1) * halfH,
-        type: debrisTypes[Math.floor(Math.random() * debrisTypes.length)],
-        color: colors[Math.floor(Math.random() * colors.length)],
+        type,
+        color: palette[Math.floor(Math.random() * palette.length)],
         size: 4 + Math.random() * 8,
         rotation: Math.random() * Math.PI * 2,
         rotSpeed: (Math.random() - 0.5) * 0.5,
-      })
+      }
+      if (type === 'buoy') {
+        piece.buoyMark = 10 + Math.floor(Math.random() * 90)
+        piece.rotation = 0
+        piece.rotSpeed = 0
+      }
+      this.debris.push(piece)
     }
   }
 
@@ -352,23 +366,156 @@ export class World {
     g.fillPath()
   }
 
+  /** Local (lx, ly) → screen; ly positive = down on screen. */
+  private debrisLocalToScreen(
+    lx: number,
+    ly: number,
+    ox: number,
+    oy: number,
+    cos: number,
+    sin: number
+  ): { sx: number; sy: number } {
+    return {
+      sx: ox + lx * cos - ly * sin,
+      sy: oy + lx * sin + ly * cos,
+    }
+  }
+
+  private drawSevenSegmentDigit(
+    g: Phaser.GameObjects.Graphics,
+    digit: number,
+    anchorX: number,
+    anchorY: number,
+    dcx: number,
+    dcy: number,
+    dh: number,
+    dw: number,
+    cos: number,
+    sin: number
+  ): void {
+    const m = BUOY_SEG7[Phaser.Math.Clamp(digit, 0, 9)] ?? 0
+    const thick = Math.max(1.1, dh * 0.14)
+    const line = (lx0: number, ly0: number, lx1: number, ly1: number) => {
+      const a = this.debrisLocalToScreen(dcx + lx0, dcy + ly0, anchorX, anchorY, cos, sin)
+      const b = this.debrisLocalToScreen(dcx + lx1, dcy + ly1, anchorX, anchorY, cos, sin)
+      g.beginPath()
+      g.moveTo(a.sx, a.sy)
+      g.lineTo(b.sx, b.sy)
+      g.strokePath()
+    }
+    g.lineStyle(thick, 0xffffff, 0.92)
+    if (m & 1) line(-dw, -dh, dw, -dh)
+    if (m & 2) line(dw, -dh + thick * 0.35, dw, -thick * 0.35)
+    if (m & 4) line(dw, thick * 0.35, dw, dh - thick * 0.35)
+    if (m & 8) line(-dw, dh, dw, dh)
+    if (m & 16) line(-dw, thick * 0.35, -dw, dh - thick * 0.35)
+    if (m & 32) line(-dw, -dh + thick * 0.35, -dw, -thick * 0.35)
+    if (m & 64) line(-dw, 0, dw, 0)
+  }
+
+  /** Side-view channel buoy: wide float, open-frame tower, marked dayboard. */
+  private drawNavBuoy(g: Phaser.GameObjects.Graphics, d: Debris, x: number, y: number): void {
+    const s = d.size
+    const cos = Math.cos(d.rotation)
+    const sin = Math.sin(d.rotation)
+    const T = (lx: number, ly: number) => this.debrisLocalToScreen(lx, ly, x, y, cos, sin)
+
+    const baseCx = 0
+    const baseCy = 0.42 * s
+    const baseRx = 2.05 * s
+    const baseRy = 0.46 * s
+    const b0 = T(baseCx - baseRx, baseCy)
+    const b1 = T(baseCx + baseRx, baseCy)
+    const baseCenter = T(baseCx, baseCy)
+
+    g.fillStyle(0x000000, 0.22)
+    g.fillEllipse(baseCenter.sx + 3, baseCenter.sy + 4, baseRx * 2 + 4, baseRy * 2 + 2)
+
+    g.fillStyle(d.color, 0.92)
+    g.fillEllipse(baseCenter.sx, baseCenter.sy, baseRx * 2, baseRy * 2)
+    g.lineStyle(1.2, 0x000000, 0.38)
+    g.strokeEllipse(baseCenter.sx, baseCenter.sy, baseRx * 2, baseRy * 2)
+
+    g.lineStyle(2, 0xf5f5f0, 0.55)
+    g.beginPath()
+    g.moveTo(b0.sx, b0.sy + baseRy * 0.55)
+    g.lineTo(b1.sx, b1.sy + baseRy * 0.55)
+    g.strokePath()
+
+    const tx = 0.4 * s
+    const yDeck = 0.02 * s
+    const yTop = -2.12 * s
+    const rungs = [-0.48 * s, -0.98 * s, -1.48 * s]
+    const capH = 0.36 * s
+    const capW = 1.05 * s
+    const capBottom = yTop
+    const capTop = yTop - capH
+
+    g.lineStyle(1.35, 0x000000, 0.32)
+    const post = (sign: number) => {
+      const p0 = T(sign * tx, yDeck)
+      const p1 = T(sign * tx, yTop)
+      g.beginPath()
+      g.moveTo(p0.sx, p0.sy)
+      g.lineTo(p1.sx, p1.sy)
+      g.strokePath()
+    }
+    post(-1)
+    post(1)
+
+    g.lineStyle(1.1, 0x000000, 0.42)
+    for (const yr of rungs) {
+      const a = T(-tx, yr)
+      const b = T(tx, yr)
+      g.beginPath()
+      g.moveTo(a.sx, a.sy)
+      g.lineTo(b.sx, b.sy)
+      g.strokePath()
+    }
+
+    const c0 = T(-capW, capBottom)
+    const c1 = T(capW, capBottom)
+    const c2 = T(capW, capTop)
+    const c3 = T(-capW, capTop)
+
+    g.fillStyle(d.color, 0.95)
+    g.beginPath()
+    g.moveTo(c0.sx, c0.sy)
+    g.lineTo(c1.sx, c1.sy)
+    g.lineTo(c2.sx, c2.sy)
+    g.lineTo(c3.sx, c3.sy)
+    g.closePath()
+    g.fillPath()
+    g.lineStyle(1.4, 0x000000, 0.45)
+    g.beginPath()
+    g.moveTo(c0.sx, c0.sy)
+    g.lineTo(c1.sx, c1.sy)
+    g.lineTo(c2.sx, c2.sy)
+    g.lineTo(c3.sx, c3.sy)
+    g.closePath()
+    g.strokePath()
+
+    const mark = d.buoyMark ?? 44
+    const d10 = Math.floor(mark / 10) % 10
+    const d1 = mark % 10
+    const dh = 0.13 * s
+    const dw = 0.07 * s
+    const digitY = (capBottom + capTop) * 0.5
+    this.drawSevenSegmentDigit(g, d10, x, y, -0.2 * s, digitY, dh, dw, cos, sin)
+    this.drawSevenSegmentDigit(g, d1, x, y, 0.2 * s, digitY, dh, dw, cos, sin)
+  }
+
   private drawDebris(d: Debris, x: number, y: number): void {
     const g = this.debrisGraphics
 
-    g.fillStyle(0x000000, 0.2)
-    g.fillEllipse(x + 3, y + 3, d.size * 2.5, d.size * 1.2)
+    if (d.type !== 'buoy') {
+      g.fillStyle(0x000000, 0.2)
+      g.fillEllipse(x + 3, y + 3, d.size * 2.5, d.size * 1.2)
+    }
 
     switch (d.type) {
       case 'buoy':
-        g.fillStyle(d.color, 0.9)
-        g.fillCircle(x, y, d.size)
-        g.lineStyle(1.5, 0x000000, 0.4)
-        g.strokeCircle(x, y, d.size)
-        g.lineStyle(2, 0xffffff, 0.6)
-        g.beginPath()
-        g.moveTo(x - d.size * 0.6, y)
-        g.lineTo(x + d.size * 0.6, y)
-        g.strokePath()
+        this.drawNavBuoy(g, d, x, y)
         break
 
       case 'plank': {

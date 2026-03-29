@@ -1,12 +1,19 @@
 import { MAP_ZOOM_BASE, viewportHalfExtents } from './mapConfig'
+import { getMinimapEdgeWorldRef } from './minimapLayout'
 import { normalizeAngle } from './Physics'
 import {
   FIXED_ROUTE_MAP,
   FixedRouteMap,
+  applyWindWaves,
+  getFixedMapBounds,
   sampleMapWindAtWithAnchors,
   windAnchorsWithinReach,
+  type FixedMapBounds,
   type WindAnchorPoint,
 } from './fixedMap'
+
+/** Padding for bounds used in homing logic; must match `GameScene` minimap `getFixedMapBounds(..., 56)`. */
+const MAP_BOUNDS_PADDING = 56
 
 /**
  * Base wind strength (global scale). `Wind.strength` and its oscillation band are built from this;
@@ -55,6 +62,30 @@ const NEAR_SPAWN_FRAC = 0.5
 /** How often to recompute which anchors are in range (seconds). */
 const WIND_ANCHOR_SCAN_INTERVAL = 2
 
+/** Euclidean distance from `(x,y)` to the axis-aligned rect; 0 if inside or on the edge. */
+function distanceOutsideBounds(x: number, y: number, b: FixedMapBounds): number {
+  const ox = x < b.minX ? b.minX - x : x > b.maxX ? x - b.maxX : 0
+  const oy = y < b.minY ? b.minY - y : y > b.maxY ? y - b.maxY : 0
+  if (ox === 0 && oy === 0) return 0
+  if (ox === 0) return oy
+  if (oy === 0) return ox
+  return Math.hypot(ox, oy)
+}
+
+/** At u=0.1⁻, virtual finish anchor outweighs map by this factor (same form as multi-anchor vector sum). */
+const FINISH_ANCHOR_TAIL_DOMINANCE = 99
+
+/**
+ * Weight of the virtual “finish” anchor. u = overrun / refSpan.
+ * At u=5% equals `wMap` so map leg and finish leg match (same rule as Σ cos(dir)·w per anchor).
+ */
+function finishAnchorInfluenceWeight(u: number, wMap: number): number {
+  if (u <= 0) return 0
+  if (u <= 0.05) return wMap * (u / 0.05)
+  const t = (u - 0.05) / 0.05
+  return wMap * (1 + FINISH_ANCHOR_TAIL_DOMINANCE * t)
+}
+
 export interface WindZone {
   worldX: number
   worldY: number
@@ -78,9 +109,15 @@ export class Wind {
   /** Refreshed every `WIND_ANCHOR_SCAN_INTERVAL` s at boat position; sampling only blends these. */
   private windActiveAnchors: WindAnchorPoint[] = []
   private anchorScanAccum = 0
+  /** World rect matching the minimap; outside it, wind gradually biases toward the finish. */
+  private readonly mapBounds: FixedMapBounds
+  /** World length ≈ shorter minimap inner edge; updated via `setMinimapHomingRefFromViewport`. */
+  private homingRefSpan: number
 
   constructor(fixedMap: FixedRouteMap = FIXED_ROUTE_MAP) {
     this.fixedMap = fixedMap
+    this.mapBounds = getFixedMapBounds(fixedMap, MAP_BOUNDS_PADDING)
+    this.homingRefSpan = Math.min(this.mapBounds.width, this.mapBounds.height)
     this.windActiveAnchors = windAnchorsWithinReach(
       fixedMap,
       fixedMap.start.worldX,
@@ -111,6 +148,53 @@ export class Wind {
 
   setMapZoom(z: number): void {
     this.mapZoom = z
+  }
+
+  /** Call each frame (or when viewport changes) so 5%/10% homing uses actual minimap edge in world units. */
+  setMinimapHomingRefFromViewport(viewW: number, viewH: number): void {
+    this.homingRefSpan = Math.max(
+      1,
+      getMinimapEdgeWorldRef(viewW, viewH, this.mapBounds)
+    )
+  }
+
+  /**
+   * Outside `mapBounds`, add a virtual anchor (wind toward finish) with the same vector-sum rule
+   * as real anchors. Until overrun ≥ 10% of ref span, map sample and finish anchor both contribute;
+   * beyond that, only the finish anchor (then `applyWindWaves` like the rest of the map).
+   */
+  private applyBoundaryHoming(
+    mapDirection: number,
+    mapStrength: number,
+    worldX: number,
+    worldY: number
+  ): number {
+    const overrun = distanceOutsideBounds(worldX, worldY, this.mapBounds)
+    if (overrun <= 0) return mapDirection
+
+    const { worldX: fx, worldY: fy } = this.fixedMap.finish
+    const dx = fx - worldX
+    const dy = fy - worldY
+    if (dx * dx + dy * dy < 1e-8) return mapDirection
+    const towardFinish = Math.atan2(dy, dx)
+
+    const u = overrun / this.homingRefSpan
+    const wMap = Math.max(0.4, mapStrength)
+
+    if (u >= 0.1) {
+      return applyWindWaves(
+        worldX,
+        worldY,
+        this.elapsedSec,
+        towardFinish,
+        mapStrength
+      ).direction
+    }
+
+    const wFin = finishAnchorInfluenceWeight(u, wMap)
+    const cx = Math.cos(mapDirection) * wMap + Math.cos(towardFinish) * wFin
+    const sy = Math.sin(mapDirection) * wMap + Math.sin(towardFinish) * wFin
+    return Math.atan2(sy, cx)
   }
 
   /** Call from GameScene after viewport size is known (e.g. create). */
@@ -204,7 +288,13 @@ export class Wind {
       this.elapsedSec,
       this.windActiveAnchors
     )
-    const dirDelta = normalizeAngle(baseWind.direction - this.direction)
+    const targetDir = this.applyBoundaryHoming(
+      baseWind.direction,
+      baseWind.strength,
+      boatWorldX,
+      boatWorldY
+    )
+    const dirDelta = normalizeAngle(targetDir - this.direction)
     this.direction = normalizeAngle(this.direction + dirDelta * Math.min(1, dt * 3.2))
     this.strength += (baseWind.strength - this.strength) * Math.min(1, dt * 2.4)
     this.strength = Math.max(0.4, this.strength)
@@ -246,6 +336,12 @@ export class Wind {
       this.elapsedSec,
       this.windActiveAnchors
     )
+    const direction = this.applyBoundaryHoming(
+      base.direction,
+      base.strength,
+      worldX,
+      worldY
+    )
     let s = base.strength
     for (const zone of this.zones) {
       const dx = worldX - zone.worldX
@@ -257,7 +353,7 @@ export class Wind {
       }
     }
     return {
-      direction: base.direction,
+      direction,
       strength: Math.max(0.1, s),
     }
   }

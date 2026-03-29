@@ -4,8 +4,10 @@ import { Wind } from '../game/Wind'
 import { World } from '../game/World'
 import {
   FIXED_ROUTE_MAP,
+  generateRandomRouteMap,
   getFixedMapBounds,
   type FixedMapBounds,
+  type FixedRouteMap,
 } from '../game/fixedMap'
 import {
   PhysicsState,
@@ -21,6 +23,8 @@ import { MAP_ZOOM_LEVELS } from '../game/mapConfig'
 import { worldToScreen } from '../game/camera'
 import { AmbientMusic } from '../game/AmbientMusic'
 import { WaterCurrent } from '../game/WaterCurrent'
+import { getMiniMapPixelLayout } from '../game/minimapLayout'
+import { SeaLifeAmbience } from '../game/SeaLifeAmbience'
 
 export class GameScene extends Phaser.Scene {
   // Core systems
@@ -80,10 +84,10 @@ export class GameScene extends Phaser.Scene {
   private zoomPlusLabel!: Phaser.GameObjects.Text
 
   private ambient!: AmbientMusic
+  private seaLife!: SeaLifeAmbience
 
   // Display conversion for HUD text
   private readonly METERS_PER_UNIT = 2
-  private readonly BEST_TIME_STORAGE_KEY = `kisswind-best-time-${this.routeMap.id}`
 
   /** HUD speed bar full scale only (not a physics cap). */
   private readonly HUD_SPEED_BAR_REF = 20
@@ -111,7 +115,13 @@ export class GameScene extends Phaser.Scene {
     this.isDragging = false
     this.mapZoomIndex = 0
     this.pinchBaseDist = 0
-    this.routeMap = FIXED_ROUTE_MAP
+    const routeOverride = this.registry.get('routeMapOverride') as FixedRouteMap | undefined
+    if (routeOverride) {
+      this.routeMap = routeOverride
+      this.registry.remove('routeMapOverride')
+    } else {
+      this.routeMap = FIXED_ROUTE_MAP
+    }
     this.routeMapBounds = getFixedMapBounds(this.routeMap, 56)
 
     // Route metrics
@@ -125,9 +135,11 @@ export class GameScene extends Phaser.Scene {
 
     // Initialize systems
     this.wind = new Wind(this.routeMap)
+    this.wind.setMinimapHomingRefFromViewport(w, h)
     this.waterCurrent = new WaterCurrent()
     this.world = new World(this)
     this.boat = new Boat(this)
+    this.seaLife = new SeaLifeAmbience(this)
 
     this.physState = {
       posX: sx,
@@ -417,6 +429,7 @@ export class GameScene extends Phaser.Scene {
 
     this.elapsedRaceSec += dt
 
+    this.wind.setMinimapHomingRefFromViewport(this.scale.width, this.scale.height)
     this.wind.update(
       dt,
       this.physState.posX,
@@ -488,6 +501,15 @@ export class GameScene extends Phaser.Scene {
       this.wind.zones,
       this.waterCurrent.direction,
       this.waterCurrent.speed
+    )
+
+    this.seaLife.update(
+      dt,
+      this.physState.posX,
+      this.physState.posY,
+      this.world.mapZoom,
+      this.scale.width,
+      this.scale.height
     )
 
     this.updateHUD()
@@ -609,16 +631,9 @@ export class GameScene extends Phaser.Scene {
   private getMiniMapLayout(): { x: number; y: number; w: number; h: number; pad: number } {
     const vw = this.scale.width
     const vh = this.scale.height
-    const compact = vw < 520 || vh < 820
-    const mapW = compact
-      ? Phaser.Math.Clamp(Math.round(vw * 0.31), 128, 172)
-      : Phaser.Math.Clamp(Math.round(vw * 0.22), 172, 236)
-    const mapH = compact
-      ? Phaser.Math.Clamp(Math.round(vh * 0.19), 96, 128)
-      : Phaser.Math.Clamp(Math.round(vh * 0.2), 128, 176)
+    const { mapW, mapH, pad } = getMiniMapPixelLayout(vw, vh)
     const x = 12
     const y = vh - this.getBottomSafePadding() - mapH - 20
-    const pad = compact ? 10 : 12
     return { x, y, w: mapW, h: mapH, pad }
   }
 
@@ -954,7 +969,7 @@ export class GameScene extends Phaser.Scene {
     overlay.setDepth(50)
 
     const panelW = Math.min(w * 0.86, 430)
-    const panelH = Math.min(h * 0.62, 380)
+    const panelH = Math.min(h * 0.74, 450)
     const panelX = w / 2 - panelW / 2
     const panelY = h / 2 - panelH / 2
 
@@ -1013,7 +1028,7 @@ export class GameScene extends Phaser.Scene {
 
     if (this.isNewRecord) {
       this.add
-        .text(w / 2, panelY + panelH * 0.74, 'NEW RECORD!', {
+        .text(w / 2, panelY + panelH * 0.7, 'NEW RECORD!', {
           fontSize: `${Math.floor(fs * 0.66)}px`,
           fontFamily: 'Georgia, serif',
           color: '#ffdd44',
@@ -1022,37 +1037,58 @@ export class GameScene extends Phaser.Scene {
         .setDepth(52)
     }
 
-    const btnW = Math.min(panelW * 0.7, 230)
-    const btnH = 48
+    const btnW = Math.min(panelW * 0.82, 280)
+    const btnH = 46
+    const btnGap = 10
     const btnX = w / 2 - btnW / 2
-    const btnY = panelY + panelH - 66
+    const btn2Y = panelY + panelH - btnH - 22
+    const btn1Y = btn2Y - btnH - btnGap
 
-    const btnBg = this.add.graphics().setDepth(52)
-    this.drawPanelButton(btnBg, btnX, btnY, btnW, btnH, false)
-    this.add
-      .text(w / 2, btnY + btnH / 2, 'SAIL AGAIN', {
-        fontSize: `${Math.floor(fs * 0.74)}px`,
-        fontFamily: 'Georgia, serif',
-        color: '#ffffff',
-        stroke: '#002255',
-        strokeThickness: 3,
-      })
-      .setOrigin(0.5)
-      .setDepth(53)
+    const wireEndPanelButton = (
+      label: string,
+      btnY: number,
+      onPress: () => void
+    ): void => {
+      const btnBg = this.add.graphics().setDepth(52)
+      this.drawPanelButton(btnBg, btnX, btnY, btnW, btnH, false)
+      this.add
+        .text(w / 2, btnY + btnH / 2, label, {
+          fontSize: `${Math.floor(fs * 0.68)}px`,
+          fontFamily: 'Georgia, serif',
+          color: '#ffffff',
+          stroke: '#002255',
+          strokeThickness: 3,
+        })
+        .setOrigin(0.5)
+        .setDepth(53)
 
-    const btnZone = this.add
-      .zone(w / 2, btnY + btnH / 2, btnW + 20, btnH + 20)
-      .setInteractive()
-      .setDepth(54)
+      const btnZone = this.add
+        .zone(w / 2, btnY + btnH / 2, btnW + 20, btnH + 20)
+        .setInteractive()
+        .setDepth(54)
 
-    btnZone.on('pointerover', () => this.drawPanelButton(btnBg, btnX, btnY, btnW, btnH, true))
-    btnZone.on('pointerout', () => this.drawPanelButton(btnBg, btnX, btnY, btnW, btnH, false))
-    btnZone.on('pointerdown', () => this.scene.restart())
+      btnZone.on('pointerover', () => this.drawPanelButton(btnBg, btnX, btnY, btnW, btnH, true))
+      btnZone.on('pointerout', () => this.drawPanelButton(btnBg, btnX, btnY, btnW, btnH, false))
+      btnZone.on('pointerdown', onPress)
+    }
+
+    wireEndPanelButton('NEW RANDOM MAP', btn1Y, () => {
+      this.registry.set('routeMapOverride', generateRandomRouteMap())
+      this.scene.restart()
+    })
+    wireEndPanelButton('SAIL AGAIN (SAME MAP)', btn2Y, () => {
+      this.registry.set('routeMapOverride', this.routeMap)
+      this.scene.restart()
+    })
+  }
+
+  private getBestTimeStorageKey(): string {
+    return `kisswind-best-time-${this.routeMap.id}`
   }
 
   private loadBestTime(): number | null {
     if (typeof window === 'undefined' || !window.localStorage) return null
-    const raw = window.localStorage.getItem(this.BEST_TIME_STORAGE_KEY)
+    const raw = window.localStorage.getItem(this.getBestTimeStorageKey())
     if (!raw) return null
     const v = Number.parseFloat(raw)
     return Number.isFinite(v) && v > 0 ? v : null
@@ -1060,7 +1096,7 @@ export class GameScene extends Phaser.Scene {
 
   private saveBestTime(sec: number): void {
     if (typeof window === 'undefined' || !window.localStorage) return
-    window.localStorage.setItem(this.BEST_TIME_STORAGE_KEY, sec.toFixed(3))
+    window.localStorage.setItem(this.getBestTimeStorageKey(), sec.toFixed(3))
   }
 
   private drawPanelButton(
@@ -1112,6 +1148,7 @@ export class GameScene extends Phaser.Scene {
     this.input.off(Phaser.Input.Events.POINTER_WHEEL, this.onPointerWheel, this)
     if (this.ambient) this.ambient.destroy()
     if (this.boat) this.boat.destroy()
+    if (this.seaLife) this.seaLife.destroy()
     if (this.world) this.world.destroy()
   }
 }

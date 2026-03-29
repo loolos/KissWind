@@ -218,7 +218,7 @@ export function nearestWindAnchor(map: FixedRouteMap, worldX: number, worldY: nu
   return best
 }
 
-function applyWindWaves(
+export function applyWindWaves(
   worldX: number,
   worldY: number,
   elapsedSec: number,
