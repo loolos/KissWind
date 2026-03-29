@@ -58,6 +58,9 @@ const PAD_WAVESHAPES: OscillatorType[] = ['sine', 'triangle', 'sawtooth']
 
 const PAD_NOTE_SWITCH_MIN_S = 2
 const PAD_NOTE_SWITCH_MAX_S = 4
+const MELODY_REST_PROBABILITY = 0.42
+const MELODY_GAP_MIN_S = 1.4
+const MELODY_GAP_MAX_S = 3.8
 
 function pickRandom<T>(arr: readonly T[] | T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]!
@@ -178,8 +181,12 @@ export class AmbientMusic {
     }
 
     if (now >= this.nextMelodyAt) {
-      this.playRandomNote(now)
-      this.nextMelodyAt = now + 2.2 + Math.random() * 3.2
+      if (Math.random() < MELODY_REST_PROBABILITY) {
+        this.nextMelodyAt = now + this.nextMelodyGapDelay()
+      } else {
+        this.playRandomNote(now)
+        this.nextMelodyAt = now + this.nextMelodyGapDelay()
+      }
     }
   }
 
@@ -187,20 +194,23 @@ export class AmbientMusic {
     if (!this.ctx || !this.master) return
 
     const freq = pickRandom(PENTATONIC_HZ)
-    const attack = 0.4 + Math.random() * 0.25
-    const sustain = 0.7 + Math.random() * 0.9
-    const release = 1.0 + Math.random() * 0.5
+    const attack = 0.008 + Math.random() * 0.02
+    const decay = 0.08 + Math.random() * 0.07
+    const sustain = 0.04 + Math.random() * 0.08
+    const release = 0.12 + Math.random() * 0.2
+    const sustainLevel = NOTE_PEAK * (0.32 + Math.random() * 0.24)
     const t0 = Math.max(startTime, this.ctx.currentTime)
 
     const osc = this.ctx.createOscillator()
-    osc.type = 'sine'
+    osc.type = Math.random() < 0.75 ? 'triangle' : 'sine'
     osc.frequency.setValueAtTime(freq, t0)
 
     const g = this.ctx.createGain()
     g.gain.setValueAtTime(0, t0)
     g.gain.linearRampToValueAtTime(NOTE_PEAK, t0 + attack)
-    g.gain.linearRampToValueAtTime(NOTE_PEAK * 0.75, t0 + attack + sustain)
-    const end = t0 + attack + sustain + release
+    g.gain.exponentialRampToValueAtTime(sustainLevel, t0 + attack + decay)
+    g.gain.setValueAtTime(sustainLevel, t0 + attack + decay + sustain)
+    const end = t0 + attack + decay + sustain + release
     g.gain.exponentialRampToValueAtTime(0.0008, end)
 
     osc.connect(g)
@@ -211,6 +221,10 @@ export class AmbientMusic {
 
   private nextPadNoteSwitchDelay(): number {
     return PAD_NOTE_SWITCH_MIN_S + Math.random() * (PAD_NOTE_SWITCH_MAX_S - PAD_NOTE_SWITCH_MIN_S)
+  }
+
+  private nextMelodyGapDelay(): number {
+    return MELODY_GAP_MIN_S + Math.random() * (MELODY_GAP_MAX_S - MELODY_GAP_MIN_S)
   }
 
   private randomizePadTimbre(): void {
