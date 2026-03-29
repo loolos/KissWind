@@ -1,6 +1,11 @@
 import Phaser from 'phaser'
 import { MAP_ZOOM_BASE } from './mapConfig'
-import { SailQuality } from './Physics'
+import { normalizeAngle, SailQuality } from './Physics'
+
+/** Time to rotate sail by 90° toward target (seconds). */
+const SAIL_90_DEG_DURATION_SEC = 2
+const SAIL_MAX_ROTATE_RAD_PER_SEC = (Math.PI / 2) / SAIL_90_DEG_DURATION_SEC
+const SAIL_ANGLE_SNAP_EPS = 1e-5
 import { BASE_WIND } from './Wind'
 
 /** Stern spray appears from this ground speed upward (7× base wind scale). */
@@ -38,6 +43,8 @@ export class Boat {
   private trailGraphics: Phaser.GameObjects.Graphics
 
   sailAngle: number
+  /** Player command; `sailAngle` eases toward this. */
+  targetSailAngle: number
   heading: number
   sailQuality: SailQuality = 'yellow'
   speed: number = 0
@@ -53,6 +60,7 @@ export class Boat {
     this.scene = scene
     this.heading = 0
     this.sailAngle = Math.PI / 4
+    this.targetSailAngle = this.sailAngle
 
     this.trailGraphics = scene.add.graphics()
     this.trailGraphics.setDepth(1)
@@ -63,6 +71,20 @@ export class Boat {
 
   setSailAngle(angle: number): void {
     this.sailAngle = angle
+    this.targetSailAngle = angle
+  }
+
+  /** Move `sailAngle` toward `targetSailAngle` along shortest arc, capped angular speed. */
+  stepSailTowardTarget(dt: number): void {
+    let err = normalizeAngle(this.targetSailAngle - this.sailAngle)
+    if (Math.abs(err) <= SAIL_ANGLE_SNAP_EPS) {
+      this.sailAngle = this.targetSailAngle
+      return
+    }
+    const maxStep = SAIL_MAX_ROTATE_RAD_PER_SEC * dt
+    if (err > maxStep) err = maxStep
+    else if (err < -maxStep) err = -maxStep
+    this.sailAngle += err
   }
 
   /** World horizontal offset from boat center → screen (Phaser y down). */

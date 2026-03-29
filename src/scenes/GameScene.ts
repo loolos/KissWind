@@ -169,6 +169,7 @@ export class GameScene extends Phaser.Scene {
 
     // Initial sail angle: slightly off local wind
     this.boat.sailAngle = this.currentWindDirection + Math.PI * 0.6
+    this.boat.targetSailAngle = this.boat.sailAngle
 
     this.wind.spawnInitialZones(w, h, sx, sy, this.currentHeading)
 
@@ -439,7 +440,7 @@ export class GameScene extends Phaser.Scene {
     const currentAngle = Math.atan2(pointer.y - cy, pointer.x - cx)
     const startAngle = Math.atan2(this.dragStartY - cy, this.dragStartX - cx)
     const deltaAngle = normalizeAngle(currentAngle - startAngle)
-    this.boat.sailAngle = this.sailAngleAtDragStart + deltaAngle
+    this.boat.targetSailAngle = this.sailAngleAtDragStart + deltaAngle
   }
 
   private onPointerUp(_pointer: Phaser.Input.Pointer): void {
@@ -464,6 +465,7 @@ export class GameScene extends Phaser.Scene {
     this.currentWindDirection = localWind.direction
     this.currentWindStrength = localWind.strength
 
+    this.boat.stepSailTowardTarget(dt)
     this.lastThrust = computeThrust(
       this.boat.sailAngle,
       this.currentWindDirection,
@@ -543,6 +545,7 @@ export class GameScene extends Phaser.Scene {
     this.currentWindDirection = localWind.direction
     this.currentWindStrength = localWind.strength
 
+    this.boat.stepSailTowardTarget(dt)
     this.lastThrust = computeThrust(
       this.boat.sailAngle,
       this.currentWindDirection,
@@ -1026,19 +1029,49 @@ export class GameScene extends Phaser.Scene {
     )
     g.strokePath()
 
-    const sailDir = this.boat.sailAngle
-    const sx = cx + Math.cos(sailDir) * r
-    const sy = cy + Math.sin(sailDir) * r
-
     const sailColors: Record<string, number> = { green: 0x44ff88, yellow: 0xffdd44, gray: 0x9aa0a8 }
-    const sailColor = sailColors[this.lastThrust.quality]
-    g.fillStyle(sailColor, 1)
-    g.fillCircle(sx, sy, 5 * scale)
-    g.lineStyle(1.5 * scale, sailColor, 0.8)
-    g.beginPath()
-    g.moveTo(cx, cy)
-    g.lineTo(sx, sy)
-    g.strokePath()
+    const sailLag = Math.abs(normalizeAngle(this.boat.targetSailAngle - this.boat.sailAngle))
+    const sailLagThreshold = 0.045
+
+    if (sailLag < sailLagThreshold) {
+      const ang = this.boat.sailAngle
+      const sx = cx + Math.cos(ang) * r
+      const sy = cy + Math.sin(ang) * r
+      const sailColor = sailColors[this.lastThrust.quality]
+      g.fillStyle(sailColor, 1)
+      g.fillCircle(sx, sy, 5 * scale)
+      g.lineStyle(1.5 * scale, sailColor, 0.8)
+      g.beginPath()
+      g.moveTo(cx, cy)
+      g.lineTo(sx, sy)
+      g.strokePath()
+    } else {
+      const rAct = r * 0.72
+      const actualDir = this.boat.sailAngle
+      const ax = cx + Math.cos(actualDir) * rAct
+      const ay = cy + Math.sin(actualDir) * rAct
+      const actColor = sailColors[this.lastThrust.quality]
+      g.fillStyle(actColor, 1)
+      g.fillCircle(ax, ay, 3.5 * scale)
+      g.lineStyle(1.2 * scale, actColor, 0.75)
+      g.beginPath()
+      g.moveTo(cx, cy)
+      g.lineTo(ax, ay)
+      g.strokePath()
+
+      const targetDir = this.boat.targetSailAngle
+      const tx = cx + Math.cos(targetDir) * r
+      const ty = cy + Math.sin(targetDir) * r
+      const targetStroke = 0xb8e8ff
+      const targetFill = 0xe8f8ff
+      g.fillStyle(targetFill, 1)
+      g.fillCircle(tx, ty, 5 * scale)
+      g.lineStyle(1.5 * scale, targetStroke, 0.95)
+      g.beginPath()
+      g.moveTo(cx, cy)
+      g.lineTo(tx, ty)
+      g.strokePath()
+    }
 
     const windX = cx + Math.cos(windDir) * (r - 8 * scale)
     const windY = cy + Math.sin(windDir) * (r - 8 * scale)
