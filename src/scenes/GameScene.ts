@@ -14,6 +14,7 @@ import {
   YELLOW_ZONE_OUTER_HALF_WIDTH,
 } from '../game/Physics'
 import { MAP_ZOOM_LEVELS } from '../game/mapConfig'
+import { worldToScreen } from '../game/camera'
 import { AmbientMusic } from '../game/AmbientMusic'
 import { WaterCurrent } from '../game/WaterCurrent'
 
@@ -527,6 +528,7 @@ export class GameScene extends Phaser.Scene {
       this.waterCurrent.direction,
       this.waterCurrent.speed
     )
+    this.drawFinishWorldFlag(w, h)
     this.windText.setText(`WIND ${this.currentWindStrength.toFixed(2)}`)
 
     const speedFracHud = Math.min(1, this.currentSpeed / this.HUD_SPEED_BAR_REF)
@@ -672,8 +674,7 @@ export class GameScene extends Phaser.Scene {
 
     g.fillStyle(0xffe188, 1)
     g.fillCircle(start.x, start.y, 3.2)
-    g.fillStyle(0x55ff99, 1)
-    g.fillCircle(finish.x, finish.y, 3.2)
+    if (!this.reachedFinish) this.drawMinimapRedFlag(g, finish.x, finish.y)
 
     g.fillStyle(0x4488ff, 1)
     g.fillCircle(boat.x, boat.y, 3.4)
@@ -684,6 +685,71 @@ export class GameScene extends Phaser.Scene {
       boat.x + Math.cos(this.currentHeading) * 8,
       boat.y + Math.sin(this.currentHeading) * 8
     )
+    g.strokePath()
+  }
+
+  /** Tiny red flag at minimap finish (screen pixels, not world scale). */
+  private drawMinimapRedFlag(g: Phaser.GameObjects.Graphics, sx: number, sy: number): void {
+    const poleH = 8
+    const poleTopY = sy - poleH
+    const tipX = sx + 6
+    const midY = poleTopY + 3.5
+
+    g.lineStyle(1.3, 0x2a1810, 0.95)
+    g.beginPath()
+    g.moveTo(sx, sy)
+    g.lineTo(sx, poleTopY)
+    g.strokePath()
+
+    g.fillStyle(0xcc2222, 0.95)
+    g.lineStyle(0.9, 0x5c1010, 0.9)
+    g.beginPath()
+    g.moveTo(sx, poleTopY)
+    g.lineTo(tipX, midY)
+    g.lineTo(sx, poleTopY + 5)
+    g.closePath()
+    g.fillPath()
+    g.strokePath()
+  }
+
+  /** Main-view marker at `routeMap.finish` using the same boat-centered projection as the ocean. */
+  private drawFinishWorldFlag(viewW: number, viewH: number): void {
+    if (this.reachedFinish) return
+
+    const { worldX: fx, worldY: fy } = this.routeMap.finish
+    const { sx, sy } = worldToScreen(
+      fx,
+      fy,
+      this.physState.posX,
+      this.physState.posY,
+      this.world.mapZoom,
+      viewW,
+      viewH
+    )
+
+    const margin = 48
+    if (sx < -margin || sy < -margin || sx > viewW + margin || sy > viewH + margin) return
+
+    const g = this.hudGraphics
+    const poleH = 22
+    const poleTopY = sy - poleH
+    const tipX = sx + 15
+    const midY = poleTopY + 9
+
+    g.lineStyle(2.2, 0x2a1810, 0.95)
+    g.beginPath()
+    g.moveTo(sx, sy)
+    g.lineTo(sx, poleTopY)
+    g.strokePath()
+
+    g.fillStyle(0xcc2222, 0.95)
+    g.lineStyle(1.2, 0x5c1010, 0.9)
+    g.beginPath()
+    g.moveTo(sx, poleTopY)
+    g.lineTo(tipX, midY)
+    g.lineTo(sx, poleTopY + 14)
+    g.closePath()
+    g.fillPath()
     g.strokePath()
   }
 

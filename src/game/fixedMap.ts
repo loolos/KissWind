@@ -23,16 +23,16 @@ export interface FixedRouteMap {
  * - same major wind anchor points
  */
 export const FIXED_ROUTE_MAP: FixedRouteMap = {
-  id: 'harbor-run-v1',
+  id: 'harbor-run-v2',
   label: 'Harbor Run',
-  start: { worldX: -220, worldY: 120 },
-  finish: { worldX: 260, worldY: -140, radius: 22 },
+  start: { worldX: -440, worldY: 240 },
+  finish: { worldX: 520, worldY: -280, radius: 36 },
   windAnchors: [
-    { id: 'w1', label: 'West Bay', worldX: -300, worldY: 170, direction: -0.32, strength: 2.6 },
-    { id: 'w2', label: 'South Reach', worldX: -60, worldY: 240, direction: -1.12, strength: 3.0 },
-    { id: 'w3', label: 'Mid Channel', worldX: 40, worldY: 40, direction: -0.64, strength: 3.4 },
-    { id: 'w4', label: 'North Ridge', worldX: 180, worldY: -90, direction: -0.08, strength: 3.1 },
-    { id: 'w5', label: 'East Gate', worldX: 300, worldY: -210, direction: 0.46, strength: 2.8 },
+    { id: 'w1', label: 'West Bay', worldX: -600, worldY: 340, direction: -0.32, strength: 2.6 },
+    { id: 'w2', label: 'South Reach', worldX: -120, worldY: 480, direction: -1.12, strength: 3.0 },
+    { id: 'w3', label: 'Mid Channel', worldX: 80, worldY: 80, direction: -0.64, strength: 3.4 },
+    { id: 'w4', label: 'North Ridge', worldX: 360, worldY: -180, direction: -0.08, strength: 3.1 },
+    { id: 'w5', label: 'East Gate', worldX: 600, worldY: -420, direction: 0.46, strength: 2.8 },
   ],
 }
 
@@ -62,49 +62,58 @@ export function getFixedMapBounds(map: FixedRouteMap, padding: number = 40): Fix
   }
 }
 
+/** Distance weight ~ halved at this radius (smooth blend inside max reach). */
+const ANCHOR_FALLOFF = 520
+/** Past this distance from an anchor, it contributes nothing (hard cutoff). */
+export const WIND_ANCHOR_MAX_REACH = ANCHOR_FALLOFF * 2
+
 function influenceWeight(dx: number, dy: number): number {
   const dist = Math.sqrt(dx * dx + dy * dy)
-  const falloff = 260
-  const u = dist / falloff
+  if (dist >= WIND_ANCHOR_MAX_REACH) return 0
+  const u = dist / ANCHOR_FALLOFF
   return 1 / (1 + u * u)
 }
 
-/**
- * Interpolates large-scale wind from fixed anchor points.
- * A small spatial + temporal perturbation keeps it dynamic at local scale.
- */
-export function sampleMapWindAt(
+/** Anchors whose center lies within wind influence range of `(worldX, worldY)`. */
+export function windAnchorsWithinReach(
   map: FixedRouteMap,
   worldX: number,
-  worldY: number,
-  elapsedSec: number
-): { direction: number; strength: number } {
-  let sumW = 0
-  let sumDirX = 0
-  let sumDirY = 0
-  let sumStrength = 0
-
+  worldY: number
+): WindAnchorPoint[] {
+  const r = WIND_ANCHOR_MAX_REACH
+  const r2 = r * r
+  const out: WindAnchorPoint[] = []
   for (const a of map.windAnchors) {
     const dx = worldX - a.worldX
     const dy = worldY - a.worldY
-    const w = influenceWeight(dx, dy)
-    sumW += w
-    sumDirX += Math.cos(a.direction) * w
-    sumDirY += Math.sin(a.direction) * w
-    sumStrength += a.strength * w
+    if (dx * dx + dy * dy < r2) out.push(a)
   }
+  return out
+}
 
-  if (sumW <= 1e-6) {
-    return {
-      direction: map.windAnchors[0].direction,
-      strength: map.windAnchors[0].strength,
+/** Closest anchor by Euclidean distance (for fallback when none are in range). */
+export function nearestWindAnchor(map: FixedRouteMap, worldX: number, worldY: number): WindAnchorPoint {
+  let best = map.windAnchors[0]
+  let bestD2 = Infinity
+  for (const a of map.windAnchors) {
+    const dx = worldX - a.worldX
+    const dy = worldY - a.worldY
+    const d2 = dx * dx + dy * dy
+    if (d2 < bestD2) {
+      bestD2 = d2
+      best = a
     }
   }
+  return best
+}
 
-  const baseDir = Math.atan2(sumDirY, sumDirX)
-  const baseStrength = sumStrength / sumW
-
-  // Small local variation: deterministic by position + smooth in time.
+function applyWindWaves(
+  worldX: number,
+  worldY: number,
+  elapsedSec: number,
+  baseDir: number,
+  baseStrength: number
+): { direction: number; strength: number } {
   const spatialWave =
     Math.sin(worldX * 0.009 + elapsedSec * 0.6) * 0.11 +
     Math.sin(worldY * 0.007 - elapsedSec * 0.45) * 0.08
@@ -117,4 +126,46 @@ export function sampleMapWindAt(
   const strength = Math.max(0.4, baseStrength * strengthWave)
 
   return { direction, strength }
+}
+
+/**
+ * Large-scale wind from a **cached** set of active anchors (e.g. those in range at last scan).
+ * Only `activeAnchors` are weighted each frame (no full-map scan).
+ * If the set is empty, or all weights vanish at this position, uses **nearest** anchor direction & strength.
+ */
+export function sampleMapWindAtWithAnchors(
+  map: FixedRouteMap,
+  worldX: number,
+  worldY: number,
+  elapsedSec: number,
+  activeAnchors: readonly WindAnchorPoint[]
+): { direction: number; strength: number } {
+  if (activeAnchors.length === 0) {
+    const a = nearestWindAnchor(map, worldX, worldY)
+    return applyWindWaves(worldX, worldY, elapsedSec, a.direction, a.strength)
+  }
+
+  let sumW = 0
+  let sumDirX = 0
+  let sumDirY = 0
+  let sumStrength = 0
+
+  for (const a of activeAnchors) {
+    const dx = worldX - a.worldX
+    const dy = worldY - a.worldY
+    const w = influenceWeight(dx, dy)
+    sumW += w
+    sumDirX += Math.cos(a.direction) * w
+    sumDirY += Math.sin(a.direction) * w
+    sumStrength += a.strength * w
+  }
+
+  if (sumW <= 1e-6) {
+    const a = nearestWindAnchor(map, worldX, worldY)
+    return applyWindWaves(worldX, worldY, elapsedSec, a.direction, a.strength)
+  }
+
+  const baseDir = Math.atan2(sumDirY, sumDirX)
+  const baseStrength = sumStrength / sumW
+  return applyWindWaves(worldX, worldY, elapsedSec, baseDir, baseStrength)
 }

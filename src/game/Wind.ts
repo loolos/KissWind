@@ -1,6 +1,12 @@
 import { MAP_ZOOM_BASE, viewportHalfExtents } from './mapConfig'
 import { normalizeAngle } from './Physics'
-import { FIXED_ROUTE_MAP, FixedRouteMap, sampleMapWindAt } from './fixedMap'
+import {
+  FIXED_ROUTE_MAP,
+  FixedRouteMap,
+  sampleMapWindAtWithAnchors,
+  windAnchorsWithinReach,
+  type WindAnchorPoint,
+} from './fixedMap'
 
 /**
  * Base wind strength (global scale). `Wind.strength` and its oscillation band are built from this;
@@ -46,6 +52,9 @@ const GUST_ZONE_MULTIPLIER = 3.0
  */
 const NEAR_SPAWN_FRAC = 0.5
 
+/** How often to recompute which anchors are in range (seconds). */
+const WIND_ANCHOR_SCAN_INTERVAL = 2
+
 export interface WindZone {
   worldX: number
   worldY: number
@@ -66,13 +75,23 @@ export class Wind {
   private zoneTimer: number
   private zoneDuration: number
 
+  /** Refreshed every `WIND_ANCHOR_SCAN_INTERVAL` s at boat position; sampling only blends these. */
+  private windActiveAnchors: WindAnchorPoint[] = []
+  private anchorScanAccum = 0
+
   constructor(fixedMap: FixedRouteMap = FIXED_ROUTE_MAP) {
     this.fixedMap = fixedMap
-    const startWind = sampleMapWindAt(
+    this.windActiveAnchors = windAnchorsWithinReach(
+      fixedMap,
+      fixedMap.start.worldX,
+      fixedMap.start.worldY
+    )
+    const startWind = sampleMapWindAtWithAnchors(
       fixedMap,
       fixedMap.start.worldX,
       fixedMap.start.worldY,
-      0
+      0,
+      this.windActiveAnchors
     )
     this.direction = startWind.direction
     this.strength = startWind.strength
@@ -172,7 +191,19 @@ export class Wind {
     boatHeading?: number
   ): void {
     this.elapsedSec += dt
-    const baseWind = sampleMapWindAt(this.fixedMap, boatWorldX, boatWorldY, this.elapsedSec)
+    this.anchorScanAccum += dt
+    if (this.anchorScanAccum >= WIND_ANCHOR_SCAN_INTERVAL) {
+      this.anchorScanAccum -= WIND_ANCHOR_SCAN_INTERVAL
+      this.windActiveAnchors = windAnchorsWithinReach(this.fixedMap, boatWorldX, boatWorldY)
+    }
+
+    const baseWind = sampleMapWindAtWithAnchors(
+      this.fixedMap,
+      boatWorldX,
+      boatWorldY,
+      this.elapsedSec,
+      this.windActiveAnchors
+    )
     const dirDelta = normalizeAngle(baseWind.direction - this.direction)
     this.direction = normalizeAngle(this.direction + dirDelta * Math.min(1, dt * 3.2))
     this.strength += (baseWind.strength - this.strength) * Math.min(1, dt * 2.4)
@@ -208,7 +239,13 @@ export class Wind {
    * - plus random gust/dead zone multipliers
    */
   getWindAt(worldX: number, worldY: number): { direction: number; strength: number } {
-    const base = sampleMapWindAt(this.fixedMap, worldX, worldY, this.elapsedSec)
+    const base = sampleMapWindAtWithAnchors(
+      this.fixedMap,
+      worldX,
+      worldY,
+      this.elapsedSec,
+      this.windActiveAnchors
+    )
     let s = base.strength
     for (const zone of this.zones) {
       const dx = worldX - zone.worldX
