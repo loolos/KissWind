@@ -1,4 +1,5 @@
 import { normalizeAngle } from './Physics'
+import { DEFAULT_ROUTE_MAP } from './mapConfig'
 
 export interface WindAnchorPoint {
   id: string
@@ -22,23 +23,101 @@ export interface WindDirectionRandomizationOptions {
   maxDeviationRad: number
 }
 
+/** Canonical default course (from `mapConfig`); same geometry & anchor winds every run unless you swap maps. */
+export const FIXED_ROUTE_MAP: FixedRouteMap = DEFAULT_ROUTE_MAP
+
+function randRange(a: number, b: number): number {
+  return a + Math.random() * (b - a)
+}
+
+function dist2(ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax
+  const dy = by - ay
+  return dx * dx + dy * dy
+}
+
+export interface GenerateRandomRouteMapOptions {
+  /** Number of wind anchors (clamped 3–8). Default 5. */
+  anchorCount?: number
+  /** Minimum distance start ↔ finish. Default 850. */
+  minStartFinishSeparation?: number
+  /** Minimum distance between anchors and from start/finish. Default 180. */
+  minPointSeparation?: number
+  finishRadius?: number
+}
+
+const RAND_WORLD = {
+  xMin: -650,
+  xMax: 650,
+  yMin: -450,
+  yMax: 480,
+} as const
+
 /**
- * A fixed map used every run:
- * - same start / finish
- * - same major wind anchor points
+ * Procedural course: random start (west-ish), finish (east-ish), scattered wind anchors.
+ * Each run gets a new `id` so best-time keys stay separate from the default map.
  */
-export const FIXED_ROUTE_MAP: FixedRouteMap = {
-  id: 'harbor-run-v2',
-  label: 'Harbor Run',
-  start: { worldX: -440, worldY: 240 },
-  finish: { worldX: 520, worldY: -280, radius: 36 },
-  windAnchors: [
-    { id: 'w1', label: 'West Bay', worldX: -600, worldY: 340, direction: -0.32, strength: 2.6 },
-    { id: 'w2', label: 'South Reach', worldX: -120, worldY: 480, direction: -1.12, strength: 3.0 },
-    { id: 'w3', label: 'Mid Channel', worldX: 80, worldY: 80, direction: -0.64, strength: 3.4 },
-    { id: 'w4', label: 'North Ridge', worldX: 360, worldY: -180, direction: -0.08, strength: 3.1 },
-    { id: 'w5', label: 'East Gate', worldX: 600, worldY: -420, direction: 0.46, strength: 2.8 },
-  ],
+export function generateRandomRouteMap(options: GenerateRandomRouteMapOptions = {}): FixedRouteMap {
+  const anchorCount = Math.max(3, Math.min(8, options.anchorCount ?? 5))
+  const minSF = options.minStartFinishSeparation ?? 850
+  const minSep = options.minPointSeparation ?? 180
+  const minSep2 = minSep * minSep
+  const finishRadius = options.finishRadius ?? 36
+
+  let start = { worldX: 0, worldY: 0 }
+  let finish = { worldX: 0, worldY: 0, radius: finishRadius }
+  for (let i = 0; i < 100; i++) {
+    start = {
+      worldX: randRange(RAND_WORLD.xMin, -120),
+      worldY: randRange(RAND_WORLD.yMin, RAND_WORLD.yMax),
+    }
+    finish = {
+      worldX: randRange(120, RAND_WORLD.xMax),
+      worldY: randRange(RAND_WORLD.yMin, RAND_WORLD.yMax),
+      radius: finishRadius,
+    }
+    if (dist2(start.worldX, start.worldY, finish.worldX, finish.worldY) >= minSF * minSF) break
+  }
+
+  const occupied: { x: number; y: number }[] = [
+    { x: start.worldX, y: start.worldY },
+    { x: finish.worldX, y: finish.worldY },
+  ]
+
+  const windAnchors: WindAnchorPoint[] = []
+  let guard = 0
+  while (windAnchors.length < anchorCount && guard < 800) {
+    guard++
+    const wx = randRange(RAND_WORLD.xMin + 50, RAND_WORLD.xMax - 50)
+    const wy = randRange(RAND_WORLD.yMin + 50, RAND_WORLD.yMax - 50)
+    let ok = true
+    for (const p of occupied) {
+      if (dist2(wx, wy, p.x, p.y) < minSep2) {
+        ok = false
+        break
+      }
+    }
+    if (!ok) continue
+    occupied.push({ x: wx, y: wy })
+    const toFinish = Math.atan2(finish.worldY - wy, finish.worldX - wx)
+    const direction = normalizeAngle(toFinish + randRange(-Math.PI * 0.55, Math.PI * 0.55))
+    windAnchors.push({
+      id: `w${windAnchors.length + 1}`,
+      label: `Sector ${windAnchors.length + 1}`,
+      worldX: wx,
+      worldY: wy,
+      direction,
+      strength: randRange(2.4, 3.5),
+    })
+  }
+
+  return {
+    id: `random-${Math.random().toString(36).slice(2, 11)}`,
+    label: 'Random course',
+    start,
+    finish,
+    windAnchors,
+  }
 }
 
 const DEFAULT_WIND_RANDOMIZATION: WindDirectionRandomizationOptions = {

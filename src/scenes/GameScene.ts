@@ -4,7 +4,6 @@ import { Wind } from '../game/Wind'
 import { World } from '../game/World'
 import {
   FIXED_ROUTE_MAP,
-  buildRandomizedRouteMap,
   getFixedMapBounds,
   type FixedMapBounds,
 } from '../game/fixedMap'
@@ -112,7 +111,7 @@ export class GameScene extends Phaser.Scene {
     this.isDragging = false
     this.mapZoomIndex = 0
     this.pinchBaseDist = 0
-    this.routeMap = buildRandomizedRouteMap(FIXED_ROUTE_MAP)
+    this.routeMap = FIXED_ROUTE_MAP
     this.routeMapBounds = getFixedMapBounds(this.routeMap, 56)
 
     // Route metrics
