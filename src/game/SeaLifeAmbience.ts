@@ -6,10 +6,10 @@ import { MAP_ZOOM_BASE, viewportHalfExtents } from './mapConfig'
 const DEPTH = 5
 
 /** Seconds until next flock / breach attempt (randomized after each spawn). */
-const BIRD_COOLDOWN_MIN = 9
-const BIRD_COOLDOWN_MAX = 26
-const BREACH_COOLDOWN_MIN = 16
-const BREACH_COOLDOWN_MAX = 42
+const BIRD_COOLDOWN_MIN = 2.2
+const BIRD_COOLDOWN_MAX = 5.5
+const BREACH_COOLDOWN_MIN = 3
+const BREACH_COOLDOWN_MAX = 8
 
 interface Bird {
   worldX: number
@@ -39,8 +39,8 @@ export class SeaLifeAmbience {
   private birds: Bird[] = []
   private breaches: Breach[] = []
 
-  private birdCountdown = 4 + Math.random() * 10
-  private breachCountdown = 10 + Math.random() * 18
+  private birdCountdown = 0.4 + Math.random() * 1.4
+  private breachCountdown = 0.8 + Math.random() * 2.2
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene
@@ -97,7 +97,6 @@ export class SeaLifeAmbience {
     halfH: number,
     marginWorld: number
   ): void {
-    const edge = Phaser.Math.Between(0, 3)
     let wx: number
     let wy: number
     let dir: number
@@ -106,26 +105,38 @@ export class SeaLifeAmbience {
     const spanX = halfW * 0.75
     const jitter = () => (Math.random() - 0.5) * 0.35
 
-    switch (edge) {
-      case 0:
-        wx = boatX - halfW - marginWorld
-        wy = boatY + (Math.random() * 2 - 1) * spanY
-        dir = jitter()
-        break
-      case 1:
-        wx = boatX + halfW + marginWorld
-        wy = boatY + (Math.random() * 2 - 1) * spanY
-        dir = Math.PI + jitter()
-        break
-      case 2:
-        wx = boatX + (Math.random() * 2 - 1) * spanX
-        wy = boatY - halfH - marginWorld
-        dir = Math.PI / 2 + jitter()
-        break
-      default:
-        wx = boatX + (Math.random() * 2 - 1) * spanX
-        wy = boatY + halfH + marginWorld
-        dir = -Math.PI / 2 + jitter()
+    /** Most birds: upper screen band (sky), fly straight across — reads clearly vs water. */
+    if (Math.random() < 0.78) {
+      const syPix = viewH * (0.05 + Math.random() * 0.22)
+      const fromLeft = Math.random() < 0.5
+      const sxPix = fromLeft ? -60 : viewW + 60
+      const p = screenToWorld(sxPix, syPix, boatX, boatY, mapZoom, viewW, viewH)
+      wx = p.wx
+      wy = p.wy
+      dir = fromLeft ? (Math.random() - 0.5) * 0.22 : Math.PI + (Math.random() - 0.5) * 0.22
+    } else {
+      const edge = Phaser.Math.Between(0, 3)
+      switch (edge) {
+        case 0:
+          wx = boatX - halfW - marginWorld
+          wy = boatY + (Math.random() * 2 - 1) * spanY
+          dir = jitter()
+          break
+        case 1:
+          wx = boatX + halfW + marginWorld
+          wy = boatY + (Math.random() * 2 - 1) * spanY
+          dir = Math.PI + jitter()
+          break
+        case 2:
+          wx = boatX + (Math.random() * 2 - 1) * spanX
+          wy = boatY - halfH - marginWorld
+          dir = Math.PI / 2 + jitter()
+          break
+        default:
+          wx = boatX + (Math.random() * 2 - 1) * spanX
+          wy = boatY + halfH + marginWorld
+          dir = -Math.PI / 2 + jitter()
+      }
     }
 
     const speed = 14 + Math.random() * 18
@@ -135,7 +146,7 @@ export class SeaLifeAmbience {
     const perpY = vx * 0.08
 
     const flockRoll = Math.random()
-    const n = flockRoll < 0.12 ? 3 : flockRoll < 0.38 ? 2 : 1
+    const n = flockRoll < 0.28 ? 3 : flockRoll < 0.62 ? 2 : 1
 
     for (let i = 0; i < n; i++) {
       const t = (i - (n - 1) * 0.5) * 2.8
@@ -206,22 +217,37 @@ export class SeaLifeAmbience {
       const { sx, sy } = worldToScreen(b.worldX, b.worldY, boatX, boatY, mapZoom, viewW, viewH)
       const base = Math.atan2(b.vy, b.vx)
       const flap = 0.28 + 0.42 * Math.abs(Math.sin(b.wingPhase))
-      const wingLen = (9 + 5 * zf) * (0.92 + flap * 0.2)
+      /** Bigger when map zoomed out so silhouettes stay readable (fish use world-anchored art). */
+      const zoomBoost = Phaser.Math.Clamp(MAP_ZOOM_BASE / Math.max(mapZoom, 1.5), 1, 2.4)
+      const wingLen = (11 + 7 * zf) * (0.92 + flap * 0.2) * zoomBoost
       const lf = base + Math.PI * 0.72 + flap * 0.22
       const rf = base - Math.PI * 0.72 - flap * 0.22
+      const lx = sx + Math.cos(lf) * wingLen
+      const ly = sy + Math.sin(lf) * wingLen
+      const rx = sx + Math.cos(rf) * wingLen
+      const ry = sy + Math.sin(rf) * wingLen
 
-      this.g.lineStyle(1.4, 0x252830, 0.88)
+      // Filled silhouette: wing tips + “nose” toward flight dir (classic gull-from-below V).
+      const noseX = sx + Math.cos(base) * wingLen * 0.3
+      const noseY = sy + Math.sin(base) * wingLen * 0.3
+      this.g.fillStyle(0x3d4658, 0.92)
+      this.g.beginPath()
+      this.g.moveTo(lx, ly)
+      this.g.lineTo(rx, ry)
+      this.g.lineTo(noseX, noseY)
+      this.g.closePath()
+      this.g.fillPath()
+
+      this.g.lineStyle(2.1, 0x2a3344, 1)
       this.g.beginPath()
       this.g.moveTo(sx, sy)
-      this.g.lineTo(sx + Math.cos(lf) * wingLen, sy + Math.sin(lf) * wingLen)
+      this.g.lineTo(lx, ly)
       this.g.moveTo(sx, sy)
-      this.g.lineTo(sx + Math.cos(rf) * wingLen, sy + Math.sin(rf) * wingLen)
+      this.g.lineTo(rx, ry)
       this.g.strokePath()
 
-      const hx = sx + Math.cos(base) * (3.2 * zf)
-      const hy = sy + Math.sin(base) * (3.2 * zf)
-      this.g.fillStyle(0x1a1c24, 0.92)
-      this.g.fillCircle(hx, hy, Math.max(1.8, 2.4 * zf))
+      this.g.fillStyle(0x252a36, 0.98)
+      this.g.fillCircle(noseX, noseY, Math.max(2.2, 3.2 * zf * zoomBoost * 0.45))
     }
 
     for (const br of this.breaches) {
