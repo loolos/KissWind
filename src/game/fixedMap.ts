@@ -173,7 +173,7 @@ export function getFixedMapBounds(map: FixedRouteMap, padding: number = 40): Fix
   }
 }
 
-/** Distance weight ~ halved at this radius (smooth blend inside max reach). */
+/** Normalized distance `u = dist / ANCHOR_FALLOFF`; per-anchor weight `1 / (0.1 + u²)`. */
 const ANCHOR_FALLOFF = 520
 /** Past this distance from an anchor, it contributes nothing (hard cutoff). */
 export const WIND_ANCHOR_MAX_REACH = ANCHOR_FALLOFF * 2
@@ -182,7 +182,7 @@ function influenceWeight(dx: number, dy: number): number {
   const dist = Math.sqrt(dx * dx + dy * dy)
   if (dist >= WIND_ANCHOR_MAX_REACH) return 0
   const u = dist / ANCHOR_FALLOFF
-  return 1 / (1 + u * u)
+  return 1 / (0.1 + u * u)
 }
 
 /** Anchors whose center lies within wind influence range of `(worldX, worldY)`. */
@@ -202,20 +202,54 @@ export function windAnchorsWithinReach(
   return out
 }
 
-/** Closest anchor by Euclidean distance (for fallback when none are in range). */
-export function nearestWindAnchor(map: FixedRouteMap, worldX: number, worldY: number): WindAnchorPoint {
-  let best = map.windAnchors[0]
-  let bestD2 = Infinity
-  for (const a of map.windAnchors) {
-    const dx = worldX - a.worldX
-    const dy = worldY - a.worldY
-    const d2 = dx * dx + dy * dy
-    if (d2 < bestD2) {
-      bestD2 = d2
-      best = a
+const TWO_NEAREST_DIST_EPS = 1e-4
+
+/**
+ * Fallback when no in-reach anchors or all influence weights vanish: take the two closest
+ * anchors on the map, weight ∝ 1 / max(dist, ε) so nearer dominates, then vector-sum direction
+ * and weighted-mean strength (same idea as the main anchor blend).
+ */
+function blendWindFromTwoNearestAnchors(
+  map: FixedRouteMap,
+  worldX: number,
+  worldY: number,
+  elapsedSec: number
+): { direction: number; strength: number } {
+  const anchors = map.windAnchors
+  if (anchors.length === 0) {
+    return applyWindWaves(worldX, worldY, elapsedSec, 0, 3)
+  }
+
+  let a1: WindAnchorPoint = anchors[0]
+  let d1 = Infinity
+  let a2: WindAnchorPoint | null = null
+  let d2 = Infinity
+
+  for (const a of anchors) {
+    const d = Math.hypot(worldX - a.worldX, worldY - a.worldY)
+    if (d < d1) {
+      a2 = a1
+      d2 = d1
+      a1 = a
+      d1 = d
+    } else if (d < d2) {
+      a2 = a
+      d2 = d
     }
   }
-  return best
+
+  if (anchors.length === 1 || a2 === null) {
+    return applyWindWaves(worldX, worldY, elapsedSec, a1.direction, a1.strength)
+  }
+
+  const w1 = 1 / Math.max(d1, TWO_NEAREST_DIST_EPS)
+  const w2 = 1 / Math.max(d2, TWO_NEAREST_DIST_EPS)
+  const sumW = w1 + w2
+  const sumDirX = Math.cos(a1.direction) * w1 + Math.cos(a2.direction) * w2
+  const sumDirY = Math.sin(a1.direction) * w1 + Math.sin(a2.direction) * w2
+  const baseDir = Math.atan2(sumDirY, sumDirX)
+  const baseStrength = (a1.strength * w1 + a2.strength * w2) / sumW
+  return applyWindWaves(worldX, worldY, elapsedSec, baseDir, baseStrength)
 }
 
 export function applyWindWaves(
@@ -242,7 +276,8 @@ export function applyWindWaves(
 /**
  * Large-scale wind from a **cached** set of active anchors (e.g. those in range at last scan).
  * Only `activeAnchors` are weighted each frame (no full-map scan).
- * If the set is empty, or all weights vanish at this position, uses **nearest** anchor direction & strength.
+ * If the set is empty, or all weights vanish at this position, blends the **two closest** map
+ * anchors by inverse-distance weights (vector direction, weighted-mean strength).
  */
 export function sampleMapWindAtWithAnchors(
   map: FixedRouteMap,
@@ -252,8 +287,7 @@ export function sampleMapWindAtWithAnchors(
   activeAnchors: readonly WindAnchorPoint[]
 ): { direction: number; strength: number } {
   if (activeAnchors.length === 0) {
-    const a = nearestWindAnchor(map, worldX, worldY)
-    return applyWindWaves(worldX, worldY, elapsedSec, a.direction, a.strength)
+    return blendWindFromTwoNearestAnchors(map, worldX, worldY, elapsedSec)
   }
 
   let sumW = 0
@@ -272,8 +306,7 @@ export function sampleMapWindAtWithAnchors(
   }
 
   if (sumW <= 1e-6) {
-    const a = nearestWindAnchor(map, worldX, worldY)
-    return applyWindWaves(worldX, worldY, elapsedSec, a.direction, a.strength)
+    return blendWindFromTwoNearestAnchors(map, worldX, worldY, elapsedSec)
   }
 
   const baseDir = Math.atan2(sumDirY, sumDirX)

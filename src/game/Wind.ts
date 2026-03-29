@@ -16,6 +16,12 @@ import {
 const MAP_BOUNDS_PADDING = 56
 
 /**
+ * `u = overrun / (homingRefSpan * this)` for boundary homing. Larger = wider world-space blend
+ * before wind is fully finish-directed (same 0–0.1 `u` curve, stretched in distance).
+ */
+const BOUNDARY_HOMING_REF_SCALE = 3
+
+/**
  * Base wind strength (global scale). `Wind.strength` and its oscillation band are built from this;
  * gust / dead zones apply fixed coefficients to the current `strength` (see `getStrengthAt`).
  */
@@ -76,7 +82,7 @@ function distanceOutsideBounds(x: number, y: number, b: FixedMapBounds): number 
 const FINISH_ANCHOR_TAIL_DOMINANCE = 99
 
 /**
- * Weight of the virtual “finish” anchor. u = overrun / refSpan.
+ * Weight of the virtual “finish” anchor. u = overrun / (homingRefSpan * BOUNDARY_HOMING_REF_SCALE).
  * At u=5% equals `wMap` so map leg and finish leg match (same rule as Σ cos(dir)·w per anchor).
  */
 function finishAnchorInfluenceWeight(u: number, wMap: number): number {
@@ -150,7 +156,7 @@ export class Wind {
     this.mapZoom = z
   }
 
-  /** Call each frame (or when viewport changes) so 5%/10% homing uses actual minimap edge in world units. */
+  /** Call each frame (or when viewport changes) so boundary homing `u` uses minimap edge length in world units. */
   setMinimapHomingRefFromViewport(viewW: number, viewH: number): void {
     this.homingRefSpan = Math.max(
       1,
@@ -160,8 +166,9 @@ export class Wind {
 
   /**
    * Outside `mapBounds`, add a virtual anchor (wind toward finish) with the same vector-sum rule
-   * as real anchors. Until overrun ≥ 10% of ref span, map sample and finish anchor both contribute;
-   * beyond that, only the finish anchor (then `applyWindWaves` like the rest of the map).
+   * as real anchors. Until overrun ≥ 10% of scaled ref (`homingRefSpan * BOUNDARY_HOMING_REF_SCALE`),
+   * map sample and finish anchor both contribute; beyond that, only the finish anchor
+   * (then `applyWindWaves` like the rest of the map).
    */
   private applyBoundaryHoming(
     mapDirection: number,
@@ -178,7 +185,7 @@ export class Wind {
     if (dx * dx + dy * dy < 1e-8) return mapDirection
     const towardFinish = Math.atan2(dy, dx)
 
-    const u = overrun / this.homingRefSpan
+    const u = overrun / (this.homingRefSpan * BOUNDARY_HOMING_REF_SCALE)
     const wMap = Math.max(0.4, mapStrength)
 
     if (u >= 0.1) {
@@ -336,12 +343,10 @@ export class Wind {
       this.elapsedSec,
       this.windActiveAnchors
     )
-    const direction = this.applyBoundaryHoming(
-      base.direction,
-      base.strength,
-      worldX,
-      worldY
-    )
+    // Use smoothed direction from `update()` (toward `applyBoundaryHoming` target). Returning
+    // instant homing here made wind at the boat snap when crossing `mapBounds` while HUD/physics
+    // ignored the eased `this.direction`.
+    const direction = this.direction
     let s = base.strength
     for (const zone of this.zones) {
       const dx = worldX - zone.worldX

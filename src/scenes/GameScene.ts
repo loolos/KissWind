@@ -60,6 +60,12 @@ export class GameScene extends Phaser.Scene {
 
   // Game state
   private elapsedRaceSec: number = 0
+  /** After SET SAIL: 3,2,1,0 each 0.5s; timer and physics run only when true. */
+  private raceLive: boolean = false
+  private introCountdownElapsed: number = 0
+  private readonly INTRO_COUNTDOWN_STEP_SEC = 0.5
+  private readonly INTRO_COUNTDOWN_TOTAL_SEC = 2
+  private countdownText!: Phaser.GameObjects.Text
   private bestTimeSec: number | null = null
   private gameOver: boolean = false
   private reachedFinish: boolean = false
@@ -110,6 +116,8 @@ export class GameScene extends Phaser.Scene {
     this.finalTimeSec = 0
     this.isNewRecord = false
     this.elapsedRaceSec = 0
+    this.raceLive = false
+    this.introCountdownElapsed = 0
     this.totalDistance = 0
     this.distanceToFinish = 0
     this.isDragging = false
@@ -168,6 +176,7 @@ export class GameScene extends Phaser.Scene {
     this.hudGraphics = this.add.graphics()
     this.hudGraphics.setDepth(20)
     this.createHUD()
+    this.createCountdownOverlay()
     this.createZoomControls()
     this.applyMapZoom()
     this.setupInput()
@@ -243,6 +252,24 @@ export class GameScene extends Phaser.Scene {
     this.miniMapTitleText.setDepth(25)
   }
 
+  private createCountdownOverlay(): void {
+    const w = this.scale.width
+    const h = this.scale.height
+    const fontPx = Math.round(Math.min(w, h) * 0.28)
+    this.countdownText = this.add
+      .text(w / 2, h / 2, '3', {
+        fontSize: `${fontPx}px`,
+        fontFamily: 'Georgia, serif',
+        color: '#ffffff',
+        stroke: '#001a33',
+        strokeThickness: Math.max(6, Math.round(fontPx * 0.08)),
+      })
+      .setOrigin(0.5)
+      .setDepth(100)
+      .setScrollFactor(0)
+      .setVisible(true)
+  }
+
   /** Upper-left map zoom: − = zoom out (smaller coefficient), + = zoom in. */
   private createZoomControls(): void {
     const w = this.scale.width
@@ -305,7 +332,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private stepMapZoom(deltaIndex: number): void {
-    if (this.gameOver) return
+    if (this.gameOver || !this.raceLive) return
     const max = MAP_ZOOM_LEVELS.length - 1
     const next = Phaser.Math.Clamp(this.mapZoomIndex + deltaIndex, 0, max)
     if (next === this.mapZoomIndex) return
@@ -342,7 +369,7 @@ export class GameScene extends Phaser.Scene {
     deltaY: number,
     _deltaZ: number
   ): void {
-    if (this.gameOver) return
+    if (this.gameOver || !this.raceLive) return
     if (deltaY === 0) return
     this.stepMapZoom(deltaY > 0 ? 1 : -1)
   }
@@ -385,7 +412,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
-    if (this.gameOver) return
+    if (this.gameOver || !this.raceLive) return
     if (this.isPointerOverMapZoom(pointer)) return
     const touches = this.activeTouchPointers()
     if (touches.length >= 2) {
@@ -400,7 +427,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private onPointerMove(pointer: Phaser.Input.Pointer): void {
-    if (this.gameOver) return
+    if (this.gameOver || !this.raceLive) return
     if (this.activeTouchPointers().length >= 2) {
       this.updatePinchZoom()
       return
@@ -420,12 +447,81 @@ export class GameScene extends Phaser.Scene {
     if (this.activeTouchPointers().length < 2) this.pinchBaseDist = 0
   }
 
+  /** During countdown: animate sea/wind/life and draw the boat; no race timer or physics drift. */
+  private stepWindSeaAndRenderDuringIntro(dt: number): void {
+    this.wind.setMinimapHomingRefFromViewport(this.scale.width, this.scale.height)
+    this.wind.update(
+      dt,
+      this.physState.posX,
+      this.physState.posY,
+      this.scale.width,
+      this.scale.height,
+      this.currentHeading
+    )
+    this.waterCurrent.update(dt)
+
+    const localWind = this.wind.getWindAt(this.physState.posX, this.physState.posY)
+    this.currentWindDirection = localWind.direction
+    this.currentWindStrength = localWind.strength
+
+    this.lastThrust = computeThrust(
+      this.boat.sailAngle,
+      this.currentWindDirection,
+      this.currentWindStrength
+    )
+
+    this.currentSpeed = 0
+    this.currentAcceleration = 0
+
+    this.boat.update(
+      dt,
+      this.currentHeading,
+      0,
+      this.lastThrust.quality,
+      this.world.mapZoom
+    )
+
+    this.world.update(
+      dt,
+      this.physState.posX,
+      this.physState.posY,
+      this.currentWindDirection,
+      this.currentWindStrength,
+      this.wind.zones,
+      this.waterCurrent.direction,
+      this.waterCurrent.speed
+    )
+
+    this.seaLife.update(
+      dt,
+      this.physState.posX,
+      this.physState.posY,
+      this.world.mapZoom,
+      this.scale.width,
+      this.scale.height
+    )
+  }
+
   update(_time: number, delta: number): void {
     const dt = Math.min(delta / 1000, 0.05)
 
     this.ambient.setBoatSpeed(this.currentSpeed)
     this.ambient.update(dt)
     if (this.gameOver) return
+
+    if (!this.raceLive) {
+      this.introCountdownElapsed += dt
+      if (this.introCountdownElapsed < this.INTRO_COUNTDOWN_TOTAL_SEC) {
+        const step = Math.floor(this.introCountdownElapsed / this.INTRO_COUNTDOWN_STEP_SEC)
+        const n = 3 - Math.min(3, step)
+        this.countdownText.setText(String(n))
+        this.stepWindSeaAndRenderDuringIntro(dt)
+        this.updateHUD()
+        return
+      }
+      this.countdownText.setVisible(false)
+      this.raceLive = true
+    }
 
     this.elapsedRaceSec += dt
 
@@ -1131,7 +1227,15 @@ export class GameScene extends Phaser.Scene {
 
   private onResize(): void {
     const w = this.scale.width
+    const h = this.scale.height
     const { sailCy } = this.getHudLayout()
+
+    if (this.countdownText) {
+      const fontPx = Math.round(Math.min(w, h) * 0.28)
+      this.countdownText.setPosition(w / 2, h / 2)
+      this.countdownText.setFontSize(`${fontPx}px`)
+      this.countdownText.setStroke(`#001a33`, Math.max(6, Math.round(fontPx * 0.08)))
+    }
 
     if (this.scoreText) this.scoreText.setPosition(w - 16, 16)
     if (this.windText) this.windText.setPosition(w / 2, 82)
@@ -1151,6 +1255,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   shutdown(): void {
+    if (this.countdownText) this.countdownText.destroy()
     this.scale.off('resize', this.onResize, this)
     this.input.off('pointerdown', this.onPointerDown, this)
     this.input.off('pointermove', this.onPointerMove, this)
