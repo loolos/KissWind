@@ -44,10 +44,7 @@ function padWindowFrequencies(step: number): number[] {
 
 const MASTER_LEVEL = 0.11
 const PAD_LEVEL = 0.14
-const NOTE_PEAK = 0.065
-
-/** Glide speed when pad moves toward a new scale degree (higher = faster portamento). */
-const PAD_ROOT_SMOOTH_SPEED = 2.2
+const NOTE_PEAK = 0.105
 
 /** Lowpass cutoff (Hz): darker ↔ brighter pad timbre when combined with wave shape. */
 const PAD_FILTER_FREQ_MIN = 120
@@ -76,9 +73,8 @@ export class AmbientMusic {
 
   private nextMelodyAt = 0
 
-  /** Pad layer root frequency (Hz): target picks random Do–So; smoothed glides toward it. */
-  private padRootTargetHz: number[] = []
-  private padRootSmoothedHz: number[] = []
+  /** Pad layer root frequency (Hz): random pick from pool each pad tick; no portamento. */
+  private padRootHz: number[] = []
   private nextPadNoteSwitchAt = 0
 
   /** Ladder step currently used for `padHzPool`. */
@@ -105,18 +101,15 @@ export class AmbientMusic {
     this.padPoolStep = 0
     this.padPendingPoolStep = 0
     this.padHzPool = padWindowFrequencies(0)
-    this.padRootTargetHz = []
-    this.padRootSmoothedHz = []
+    this.padRootHz = []
     for (let i = 0; i < NUM_PAD_LAYERS; i++) {
-      const hz = pickRandom(this.padHzPool)
-      this.padRootTargetHz.push(hz)
-      this.padRootSmoothedHz.push(hz)
+      this.padRootHz.push(pickRandom(this.padHzPool))
     }
 
     this.padOscs = []
     this.padFilters = []
     for (let i = 0; i < NUM_PAD_LAYERS; i++) {
-      const f = this.padRootSmoothedHz[i]!
+      const f = this.padRootHz[i]!
       const osc = this.ctx.createOscillator()
       osc.type = 'sine'
       osc.frequency.value = f
@@ -166,18 +159,6 @@ export class AmbientMusic {
     if (now >= this.nextPadNoteSwitchAt) {
       this.randomizePadNotesAndTimbre()
       this.nextPadNoteSwitchAt = now + this.nextPadNoteSwitchDelay()
-    }
-
-    const rootK = Math.min(1, dt * PAD_ROOT_SMOOTH_SPEED)
-    for (let i = 0; i < this.padRootSmoothedHz.length; i++) {
-      const tgt = this.padRootTargetHz[i]!
-      this.padRootSmoothedHz[i]! += (tgt - this.padRootSmoothedHz[i]!) * rootK
-    }
-
-    for (let i = 0; i < this.padOscs.length; i++) {
-      const base = this.padRootSmoothedHz[i]!
-      const o = this.padOscs[i]!
-      o.frequency.setTargetAtTime(base, now, 0.12)
     }
 
     if (now >= this.nextMelodyAt) {
@@ -250,8 +231,14 @@ export class AmbientMusic {
       this.padHzPool = padWindowFrequencies(this.padPoolStep)
     }
 
-    for (let i = 0; i < this.padRootTargetHz.length; i++) {
-      this.padRootTargetHz[i] = pickRandom(this.padHzPool)
+    for (let i = 0; i < this.padRootHz.length; i++) {
+      this.padRootHz[i] = pickRandom(this.padHzPool)
+    }
+    if (this.ctx) {
+      const t = this.ctx.currentTime
+      for (let i = 0; i < this.padOscs.length; i++) {
+        this.padOscs[i]!.frequency.setValueAtTime(this.padRootHz[i]!, t)
+      }
     }
     this.randomizePadTimbre()
   }
