@@ -1,5 +1,5 @@
 // Physics constants
-export const K1 = 0.05  // linear drag coefficient
+export const K1 = 0.025 // linear drag coefficient
 export const K2 = 0.015 // quadratic drag coefficient
 
 // Sail angle zones (relative to wind): green = 45° total centered on optimal; ±45° beyond that = yellow

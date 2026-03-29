@@ -9,7 +9,10 @@ const SPRAY_SPEED_SMALL = BASE_WIND * 7
 const SPRAY_SPEED_LARGE = BASE_WIND * 10
 
 /** Hull, mast, sail, strokes, and wake scale in the gameplay view (1 = original size). */
-const BOAT_VIS_SCALE = 2.1
+export const BOAT_VIS_SCALE = 2.1
+
+/** Matches `hullLength / 2` in `draw` (56 × visScale → half-length along x before second `visScale` in `projWorld`). */
+const HULL_HALF_LENGTH_UNITS = 28
 
 /**
  * Camera ~30° above horizontal: deck fore-aft is foreshortened; mast/sail height maps to screen Y.
@@ -547,4 +550,34 @@ export class Boat {
     this.graphics.destroy()
     this.trailGraphics.destroy()
   }
+}
+
+/** Matches hull half-length / half-beam in `draw` after `projWorld` (world ≈ px / mapZoom). */
+export function hullEllipseSemiAxesWorld(mapZoom: number): { halfLen: number; halfBeam: number } {
+  const visScale = BOAT_VIS_SCALE * Math.pow(mapZoom / MAP_ZOOM_BASE, 0.3)
+  const z = mapZoom
+  return {
+    halfLen: ((HULL_HALF_LENGTH_UNITS * visScale * visScale) / z) * 0.9,
+    halfBeam: (((12 * 0.5) * visScale * visScale) / z) * 0.88,
+  }
+}
+
+/**
+ * Distance from boat center to expanded-hull ellipse along the ray to `(along, across)` in boat frame
+ * (along = forward, across = starboard). Uses Minkowski +r with debris circle.
+ */
+export function boatDebrisBoundaryAlongRay(
+  along: number,
+  across: number,
+  debrisR: number,
+  mapZoom: number
+): number {
+  const { halfLen, halfBeam } = hullEllipseSemiAxesWorld(mapZoom)
+  const a = halfLen + debrisR
+  const b = halfBeam + debrisR
+  const d = Math.hypot(along, across)
+  if (d < 1e-8) return Math.min(a, b)
+  const cosP = along / d
+  const sinP = across / d
+  return 1 / Math.sqrt((cosP / a) ** 2 + (sinP / b) ** 2)
 }

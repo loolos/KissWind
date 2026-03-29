@@ -317,7 +317,7 @@ export class GameScene extends Phaser.Scene {
     const z = MAP_ZOOM_LEVELS[this.mapZoomIndex]
     this.world.setMapZoom(z)
     this.wind.setMapZoom(z)
-    this.world.resize(this.physState.posX, this.physState.posY)
+    // Do not call world.resize here — that would respawn debris/waves and jump props; zoom only changes projection.
   }
 
   private isPointerOverMapZoom(pointer: Phaser.Input.Pointer): boolean {
@@ -466,6 +466,17 @@ export class GameScene extends Phaser.Scene {
       curX,
       curY
     )
+
+    const hit = this.world.applyBoatDebrisCollision(
+      this.physState.posX,
+      this.physState.posY,
+      this.physState.velX,
+      this.physState.velY,
+      this.world.mapZoom,
+      this.currentHeading
+    )
+    this.physState.velX += hit.dvx
+    this.physState.velY += hit.dvy
 
     const gx = this.physState.velX + curX
     const gy = this.physState.velY + curY

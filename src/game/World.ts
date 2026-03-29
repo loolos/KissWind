@@ -1,7 +1,24 @@
 import Phaser from 'phaser'
+import { boatDebrisBoundaryAlongRay } from './Boat'
 import { screenToWorld, worldToScreen } from './camera'
 import { MAP_ZOOM_BASE, viewportHalfExtents } from './mapConfig'
 import { WindZone } from './Wind'
+
+/** Floating debris velocity damping (1/s), ~water drag on props. */
+const DEBRIS_VEL_DRAG = 0.95
+/** Plank → shard count range. */
+const PLANK_SHARD_MIN = 4
+const PLANK_SHARD_MAX = 7
+/** Shards disappear after this many seconds. */
+const SHARD_TTL_MIN = 10
+const SHARD_TTL_MAX = 16
+/** Tighten debris circle vs drawn sprite so hits match visuals. */
+const DEBRIS_RADIUS_VIS_SCALE = 0.68
+/** Boat velocity loss along impact (~50% gentler than first tuning). */
+const BOAT_SLOW_PLANK = 0.17
+const BOAT_SLOW_BUOY = 0.11
+const BOAT_SLOW_BARREL = 0.13
+const BOAT_SLOW_SHARD = 0.15
 
 /** World-space drift speed scale (units/s), multiplied by each line’s random speed and current strength. */
 const WAVE_DRIFT_SPEED = 1.1
@@ -18,13 +35,17 @@ const WATER_TINT_STRIPS = 28
 interface Debris {
   worldX: number
   worldY: number
-  type: 'buoy' | 'plank' | 'barrel'
+  type: 'buoy' | 'plank' | 'barrel' | 'shard'
   color: number
   size: number
   rotation: number
   rotSpeed: number
+  velX: number
+  velY: number
   /** Channel-style two-digit mark (buoy only). */
   buoyMark?: number
+  /** Shards only — removed when elapsed. */
+  ttlSec?: number
 }
 
 /** 7-segment patterns: bits a,b,c,d,e,f,g = 1,2,4,8,16,32,64 */
@@ -92,6 +113,8 @@ export class World {
         size: 4 + Math.random() * 8,
         rotation: Math.random() * Math.PI * 2,
         rotSpeed: (Math.random() - 0.5) * 0.5,
+        velX: 0,
+        velY: 0,
       }
       if (type === 'buoy') {
         piece.buoyMark = 10 + Math.floor(Math.random() * 90)
@@ -157,12 +180,141 @@ export class World {
       this.wrapWorldPoint(wl, boatX, boatY, halfW, halfH)
     }
 
-    for (const d of this.debris) {
+    const drag = Math.exp(-DEBRIS_VEL_DRAG * dt)
+    this.debris = this.debris.filter(d => {
+      if (d.ttlSec !== undefined) {
+        d.ttlSec -= dt
+        if (d.ttlSec <= 0) return false
+      }
       d.rotation += d.rotSpeed * dt
+      d.worldX += d.velX * dt
+      d.worldY += d.velY * dt
+      d.velX *= drag
+      d.velY *= drag
       this.wrapWorldPoint(d, boatX, boatY, halfW, halfH)
-    }
+      return true
+    })
 
     this.draw(windDir, zones, boatX, boatY, waterFlowDir)
+  }
+
+  /**
+   * Resolve hull vs debris: buoys/barrels/shards get pushed with momentum-style transfer;
+   * planks shatter into shards. Applies a small velocity kick opposite the impact on the boat.
+   */
+  applyBoatDebrisCollision(
+    boatX: number,
+    boatY: number,
+    boatVelX: number,
+    boatVelY: number,
+    mapZoom: number,
+    /** Hull long axis (same frame as `Boat.heading` / ground course). */
+    boatHeading: number
+  ): { dvx: number; dvy: number } {
+    let dvx = 0
+    let dvy = 0
+    const hx = Math.cos(boatHeading)
+    const hy = Math.sin(boatHeading)
+
+    for (let i = this.debris.length - 1; i >= 0; i--) {
+      const d = this.debris[i]
+      const dx = d.worldX - boatX
+      const dy = d.worldY - boatY
+      const dist = Math.hypot(dx, dy)
+      const r = this.debrisCollisionRadius(d, mapZoom)
+      if (dist < 1e-6) continue
+      const along = dx * hx + dy * hy
+      const across = -dx * hy + dy * hx
+      const boundary = boatDebrisBoundaryAlongRay(along, across, r, mapZoom)
+      if (dist >= boundary) continue
+
+      const nx = dx / dist
+      const ny = dy / dist
+      const overlap = boundary - dist
+      d.worldX += nx * overlap
+      d.worldY += ny * overlap
+
+      const relVx = boatVelX - d.velX
+      const relVy = boatVelY - d.velY
+      const relAlong = relVx * nx + relVy * ny
+      const approach = Math.max(0.15, relAlong)
+
+      if (d.type === 'plank') {
+        const nShards = Phaser.Math.Between(PLANK_SHARD_MIN, PLANK_SHARD_MAX)
+        const shards: Debris[] = []
+        for (let s = 0; s < nShards; s++) {
+          const baseAng = (s / nShards) * Math.PI * 2 + (Math.random() - 0.5) * 0.9
+          const kick = approach * (0.55 + Math.random() * 0.45) + Math.random() * 0.9
+          const tx = -ny
+          const ty = nx
+          const tang = (Math.random() - 0.5) * 1.1
+          shards.push({
+            worldX: d.worldX + (Math.random() - 0.5) * r * 0.4,
+            worldY: d.worldY + (Math.random() - 0.5) * r * 0.4,
+            type: 'shard',
+            color: d.color,
+            size: d.size * (0.28 + Math.random() * 0.22),
+            rotation: Math.random() * Math.PI * 2,
+            rotSpeed: (Math.random() - 0.5) * 2.2,
+            velX: d.velX + Math.cos(baseAng) * kick + tx * tang,
+            velY: d.velY + Math.sin(baseAng) * kick + ty * tang,
+            ttlSec: Phaser.Math.FloatBetween(SHARD_TTL_MIN, SHARD_TTL_MAX),
+          })
+        }
+        this.debris.splice(i, 1, ...shards)
+        dvx -= BOAT_SLOW_PLANK * approach * nx
+        dvy -= BOAT_SLOW_PLANK * approach * ny
+        continue
+      }
+
+      // Buoy / barrel / shard — inelastic push; buoy moves less than light debris.
+      let debrisGain: number
+      let boatLossAlong: number
+      if (d.type === 'buoy') {
+        debrisGain = 0.14 + approach * 0.2
+        boatLossAlong = BOAT_SLOW_BUOY
+      } else if (d.type === 'barrel') {
+        debrisGain = 0.2 + approach * 0.28
+        boatLossAlong = BOAT_SLOW_BARREL
+      } else {
+        debrisGain = 0.26 + approach * 0.38
+        boatLossAlong = BOAT_SLOW_SHARD
+      }
+
+      d.velX += nx * debrisGain
+      d.velY += ny * debrisGain
+      dvx -= boatLossAlong * approach * nx
+      dvy -= boatLossAlong * approach * ny
+
+      if (d.type === 'buoy') {
+        d.rotSpeed += (Math.random() - 0.5) * 0.35
+      }
+    }
+
+    return { dvx, dvy }
+  }
+
+  private debrisCollisionRadius(d: Debris, mapZoom: number): number {
+    const z = mapZoom
+    const s = d.size
+    let raw: number
+    switch (d.type) {
+      case 'buoy':
+        raw = (2.05 * s) / z
+        break
+      case 'plank':
+        raw = (3.0 * s) / z
+        break
+      case 'barrel':
+        raw = (2.45 * s) / z
+        break
+      case 'shard':
+        raw = (1.25 * s) / z
+        break
+      default:
+        raw = (2 * s) / z
+    }
+    return raw * DEBRIS_RADIUS_VIS_SCALE
   }
 
   /** Depth tint from world Y so the base moves with the map (not glued to the screen). */
@@ -509,14 +661,42 @@ export class World {
     const g = this.debrisGraphics
 
     if (d.type !== 'buoy') {
-      g.fillStyle(0x000000, 0.2)
-      g.fillEllipse(x + 3, y + 3, d.size * 2.5, d.size * 1.2)
+      const sh = d.type === 'shard' ? 0.55 : 1
+      g.fillStyle(0x000000, 0.2 * sh)
+      g.fillEllipse(x + 3, y + 3, d.size * 2.5 * sh, d.size * 1.2 * sh)
     }
 
     switch (d.type) {
       case 'buoy':
         this.drawNavBuoy(g, d, x, y)
         break
+
+      case 'shard': {
+        const sc = Math.cos(d.rotation)
+        const sn = Math.sin(d.rotation)
+        const pw = d.size * 1.65
+        const ph = d.size * 0.42
+        const corners = [
+          { x: -pw, y: -ph }, { x: pw, y: -ph },
+          { x: pw, y: ph }, { x: -pw, y: ph },
+        ].map(p => ({
+          x: x + p.x * sc - p.y * sn,
+          y: y + p.x * sn + p.y * sc,
+        }))
+        g.fillStyle(d.color, 0.78)
+        g.beginPath()
+        g.moveTo(corners[0].x, corners[0].y)
+        corners.slice(1).forEach(c => g.lineTo(c.x, c.y))
+        g.closePath()
+        g.fillPath()
+        g.lineStyle(0.85, 0x000000, 0.28)
+        g.beginPath()
+        g.moveTo(corners[0].x, corners[0].y)
+        corners.slice(1).forEach(c => g.lineTo(c.x, c.y))
+        g.closePath()
+        g.strokePath()
+        break
+      }
 
       case 'plank': {
         const plankCos = Math.cos(d.rotation)
