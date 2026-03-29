@@ -2,7 +2,12 @@ import Phaser from 'phaser'
 import { Boat } from '../game/Boat'
 import { Wind } from '../game/Wind'
 import { World } from '../game/World'
-import { FIXED_ROUTE_MAP, getFixedMapBounds, type FixedMapBounds } from '../game/fixedMap'
+import {
+  FIXED_ROUTE_MAP,
+  buildRandomizedRouteMap,
+  getFixedMapBounds,
+  type FixedMapBounds,
+} from '../game/fixedMap'
 import {
   PhysicsState,
   ThrustResult,
@@ -45,8 +50,8 @@ export class GameScene extends Phaser.Scene {
   private miniMapTitleText!: Phaser.GameObjects.Text
 
   // Fixed route map
-  private readonly routeMap = FIXED_ROUTE_MAP
-  private readonly routeMapBounds: FixedMapBounds = getFixedMapBounds(FIXED_ROUTE_MAP, 56)
+  private routeMap = FIXED_ROUTE_MAP
+  private routeMapBounds: FixedMapBounds = getFixedMapBounds(FIXED_ROUTE_MAP, 56)
   private routeDistance: number = 1
   private distanceToFinish: number = 0
 
@@ -107,6 +112,8 @@ export class GameScene extends Phaser.Scene {
     this.isDragging = false
     this.mapZoomIndex = 0
     this.pinchBaseDist = 0
+    this.routeMap = buildRandomizedRouteMap(FIXED_ROUTE_MAP)
+    this.routeMapBounds = getFixedMapBounds(this.routeMap, 56)
 
     // Route metrics
     const sx = this.routeMap.start.worldX

@@ -17,6 +17,11 @@ export interface FixedRouteMap {
   windAnchors: WindAnchorPoint[]
 }
 
+export interface WindDirectionRandomizationOptions {
+  /** Max absolute angular offset from anchor→finish direction (radians). */
+  maxDeviationRad: number
+}
+
 /**
  * A fixed map used every run:
  * - same start / finish
@@ -34,6 +39,33 @@ export const FIXED_ROUTE_MAP: FixedRouteMap = {
     { id: 'w4', label: 'North Ridge', worldX: 360, worldY: -180, direction: -0.08, strength: 3.1 },
     { id: 'w5', label: 'East Gate', worldX: 600, worldY: -420, direction: 0.46, strength: 2.8 },
   ],
+}
+
+const DEFAULT_WIND_RANDOMIZATION: WindDirectionRandomizationOptions = {
+  maxDeviationRad: (Math.PI * 2) / 3, // ±120°
+}
+
+/**
+ * Build a per-run route map variant where anchor winds are less "goal-seeking":
+ * each anchor direction is offset around its anchor→finish bearing by up to ±`maxDeviationRad`.
+ */
+export function buildRandomizedRouteMap(
+  baseMap: FixedRouteMap,
+  options: Partial<WindDirectionRandomizationOptions> = {}
+): FixedRouteMap {
+  const cfg = { ...DEFAULT_WIND_RANDOMIZATION, ...options }
+  const { worldX: finishX, worldY: finishY } = baseMap.finish
+  return {
+    ...baseMap,
+    windAnchors: baseMap.windAnchors.map((anchor) => {
+      const toFinishDir = Math.atan2(finishY - anchor.worldY, finishX - anchor.worldX)
+      const deviation = (Math.random() * 2 - 1) * cfg.maxDeviationRad
+      return {
+        ...anchor,
+        direction: normalizeAngle(toFinishDir + deviation),
+      }
+    }),
+  }
 }
 
 export interface FixedMapBounds {
