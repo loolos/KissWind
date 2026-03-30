@@ -3,6 +3,8 @@ import { boatDebrisBoundaryAlongRay } from './Boat'
 import { screenToWorld, worldToScreen } from './camera'
 import { MAP_ZOOM_BASE, viewportHalfExtents } from './mapConfig'
 import { WindZone } from './Wind'
+import type { FixedRouteMap } from './fixedMap'
+import type { LandMass } from './land'
 
 /** Floating debris velocity damping (1/s), ~water drag on props. */
 const DEBRIS_VEL_DRAG = 0.95
@@ -62,8 +64,10 @@ interface WaveLine {
 export class World {
   private scene: Phaser.Scene
   private waterGraphics: Phaser.GameObjects.Graphics
+  private landGraphics: Phaser.GameObjects.Graphics
   private debrisGraphics: Phaser.GameObjects.Graphics
   private zoneGraphics: Phaser.GameObjects.Graphics
+  private readonly lands: readonly LandMass[]
 
   private debris: Debris[] = []
   private waveLines: WaveLine[] = []
@@ -72,12 +76,16 @@ export class World {
   /** World units → screen pixels (see mapConfig) */
   mapZoom: number
 
-  constructor(scene: Phaser.Scene, mapZoom: number = MAP_ZOOM_BASE) {
+  constructor(scene: Phaser.Scene, routeMap?: FixedRouteMap, mapZoom: number = MAP_ZOOM_BASE) {
     this.scene = scene
     this.mapZoom = mapZoom
+    this.lands = routeMap?.lands ?? []
 
     this.waterGraphics = scene.add.graphics()
     this.waterGraphics.setDepth(0)
+
+    this.landGraphics = scene.add.graphics()
+    this.landGraphics.setDepth(1)
 
     this.zoneGraphics = scene.add.graphics()
     this.zoneGraphics.setDepth(2)
@@ -423,6 +431,7 @@ export class World {
     }
 
     this.drawWaterWaveContours(boatX, boatY, z, w, h, waterFlowDir)
+    this.drawLands(boatX, boatY, z, w, h)
 
     for (const wl of this.waveLines) {
       const perpX = Math.cos(waterFlowDir + Math.PI / 2)
@@ -486,6 +495,90 @@ export class World {
     for (const d of this.debris) {
       const scr = worldToScreen(d.worldX, d.worldY, boatX, boatY, z, w, h)
       this.drawDebris(d, scr.sx, scr.sy)
+    }
+  }
+
+  private drawLands(boatX: number, boatY: number, z: number, w: number, h: number): void {
+    this.landGraphics.clear()
+    if (this.lands.length === 0) return
+    const g = this.landGraphics
+    const fillColor = 0x7a8f52
+    const fillColor2 = 0x91a861
+    const edgeColor = 0x3d4f28
+    const beachColor = 0xcbb37b
+
+    for (const land of this.lands) {
+      if (land.kind === 'circle') {
+        const p = worldToScreen(land.worldX, land.worldY, boatX, boatY, z, w, h)
+        const r = land.radius * z
+        if (p.sx < -r * 2 || p.sy < -r * 2 || p.sx > w + r * 2 || p.sy > h + r * 2) continue
+        g.fillStyle(fillColor, 0.96)
+        g.fillCircle(p.sx, p.sy, r)
+        g.fillStyle(fillColor2, 0.3)
+        g.fillCircle(p.sx + r * 0.16, p.sy - r * 0.12, r * 0.58)
+        g.lineStyle(2, beachColor, 0.8)
+        g.strokeCircle(p.sx, p.sy, r * 0.96)
+        g.lineStyle(2, edgeColor, 0.92)
+        g.strokeCircle(p.sx, p.sy, r)
+        continue
+      }
+
+      if (land.kind === 'rect') {
+        const hx = land.width * 0.5
+        const hy = land.height * 0.5
+        const c = Math.cos(land.rotation)
+        const s = Math.sin(land.rotation)
+        const corners = [
+          { x: -hx, y: -hy },
+          { x: hx, y: -hy },
+          { x: hx, y: hy },
+          { x: -hx, y: hy },
+        ].map((pt) => {
+          const wx = land.worldX + pt.x * c - pt.y * s
+          const wy = land.worldY + pt.x * s + pt.y * c
+          return worldToScreen(wx, wy, boatX, boatY, z, w, h)
+        })
+        g.fillStyle(fillColor, 0.95)
+        g.beginPath()
+        g.moveTo(corners[0].sx, corners[0].sy)
+        for (let i = 1; i < corners.length; i++) g.lineTo(corners[i].sx, corners[i].sy)
+        g.closePath()
+        g.fillPath()
+        g.lineStyle(2, beachColor, 0.75)
+        g.beginPath()
+        g.moveTo(corners[0].sx, corners[0].sy)
+        for (let i = 1; i < corners.length; i++) g.lineTo(corners[i].sx, corners[i].sy)
+        g.closePath()
+        g.strokePath()
+        g.lineStyle(2, edgeColor, 0.92)
+        g.beginPath()
+        g.moveTo(corners[0].sx, corners[0].sy)
+        for (let i = 1; i < corners.length; i++) g.lineTo(corners[i].sx, corners[i].sy)
+        g.closePath()
+        g.strokePath()
+        continue
+      }
+
+      if (land.points.length < 3) continue
+      const pts = land.points.map((pt) => worldToScreen(pt.x, pt.y, boatX, boatY, z, w, h))
+      g.fillStyle(fillColor, 0.95)
+      g.beginPath()
+      g.moveTo(pts[0].sx, pts[0].sy)
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].sx, pts[i].sy)
+      g.closePath()
+      g.fillPath()
+      g.lineStyle(2, beachColor, 0.75)
+      g.beginPath()
+      g.moveTo(pts[0].sx, pts[0].sy)
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].sx, pts[i].sy)
+      g.closePath()
+      g.strokePath()
+      g.lineStyle(2, edgeColor, 0.92)
+      g.beginPath()
+      g.moveTo(pts[0].sx, pts[0].sy)
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].sx, pts[i].sy)
+      g.closePath()
+      g.strokePath()
     }
   }
 
@@ -745,6 +838,10 @@ export class World {
     this.mapZoom = z
   }
 
+  getLands(): readonly LandMass[] {
+    return this.lands
+  }
+
   resize(boatX: number, boatY: number): void {
     this.waveLines = []
     this.debris = []
@@ -754,6 +851,7 @@ export class World {
 
   destroy(): void {
     this.waterGraphics.destroy()
+    this.landGraphics.destroy()
     this.debrisGraphics.destroy()
     this.zoneGraphics.destroy()
   }

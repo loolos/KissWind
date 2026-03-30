@@ -11,6 +11,7 @@ import {
   type FixedMapBounds,
   type WindAnchorPoint,
 } from './fixedMap'
+import { isPointOnAnyLand } from './land'
 
 /** Padding for bounds used in homing logic; must match `GameScene` minimap `getFixedMapBounds(..., 56)`. */
 const MAP_BOUNDS_PADDING = 56
@@ -236,41 +237,50 @@ export class Wind {
     viewport?: { halfW: number; halfH: number },
     boatHeading?: number
   ): void {
-    const angle = this.sampleSpawnAngle(viewport !== undefined ? boatHeading : undefined)
-    const z = this.mapZoom
-    const radiusMult = ZONE_RADIUS_MULT_MIN + Math.random() * (ZONE_RADIUS_MULT_MAX - ZONE_RADIUS_MULT_MIN)
-    const base =
-      ZONE_RADIUS_BASE_MIN +
-      Math.random() * (ZONE_RADIUS_BASE_MAX - ZONE_RADIUS_BASE_MIN)
-    const radius = (base / z) * radiusMult
+    for (let attempt = 0; attempt < 18; attempt++) {
+      const angle = this.sampleSpawnAngle(viewport !== undefined ? boatHeading : undefined)
+      const z = this.mapZoom
+      const radiusMult =
+        ZONE_RADIUS_MULT_MIN + Math.random() * (ZONE_RADIUS_MULT_MAX - ZONE_RADIUS_MULT_MIN)
+      const base =
+        ZONE_RADIUS_BASE_MIN +
+        Math.random() * (ZONE_RADIUS_BASE_MAX - ZONE_RADIUS_BASE_MIN)
+      const radius = (base / z) * radiusMult
 
-    let dist: number
-    if (viewport) {
-      const diag = Math.sqrt(viewport.halfW * viewport.halfW + viewport.halfH * viewport.halfH)
-      const rMax = this.maxZoneRadiusWorld()
-      const margin = 120 / z
-      if (Math.random() < NEAR_SPAWN_FRAC) {
-        // Closer ring: easier to intersect while playing; inner edge can graze the view.
-        const distMinNear = diag + 30 / z + Math.random() * (40 / z)
-        const distRangeNear = (400 + Math.random() * 500) / z
-        dist = distMinNear + Math.random() * distRangeNear
+      let dist: number
+      if (viewport) {
+        const diag = Math.sqrt(viewport.halfW * viewport.halfW + viewport.halfH * viewport.halfH)
+        const rMax = this.maxZoneRadiusWorld()
+        const margin = 120 / z
+        if (Math.random() < NEAR_SPAWN_FRAC) {
+          // Closer ring: easier to intersect while playing; inner edge can graze the view.
+          const distMinNear = diag + 30 / z + Math.random() * (40 / z)
+          const distRangeNear = (400 + Math.random() * 500) / z
+          dist = distMinNear + Math.random() * distRangeNear
+        } else {
+          const distMinFar = diag + rMax + margin
+          const distRangeFar = (700 + Math.random() * 600) / z
+          dist = distMinFar + Math.random() * distRangeFar
+        }
       } else {
-        const distMinFar = diag + rMax + margin
-        const distRangeFar = (700 + Math.random() * 600) / z
-        dist = distMinFar + Math.random() * distRangeFar
+        dist = (300 + Math.random() * 600) / z
       }
-    } else {
-      dist = (300 + Math.random() * 600) / z
-    }
 
-    const type = Math.random() < 0.6 ? 'gust' : 'dead'
-    this.zones.push({
-      worldX: centerX + Math.cos(angle) * dist,
-      worldY: centerY + Math.sin(angle) * dist,
-      radius,
-      type,
-      multiplier: type === 'gust' ? GUST_ZONE_MULTIPLIER : 0.3,
-    })
+      const worldX = centerX + Math.cos(angle) * dist
+      const worldY = centerY + Math.sin(angle) * dist
+      // Keep local wind zones completely away from land masses.
+      if (isPointOnAnyLand(this.fixedMap.lands, worldX, worldY, radius + 6)) continue
+
+      const type = Math.random() < 0.6 ? 'gust' : 'dead'
+      this.zones.push({
+        worldX,
+        worldY,
+        radius,
+        type,
+        multiplier: type === 'gust' ? GUST_ZONE_MULTIPLIER : 0.3,
+      })
+      return
+    }
   }
 
   update(

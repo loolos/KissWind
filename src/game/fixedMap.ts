@@ -1,5 +1,13 @@
 import { normalizeAngle } from './Physics'
 import { DEFAULT_ROUTE_MAP } from './mapConfig'
+import {
+  getLandBounds,
+  isPointOnAnyLand,
+  isPointOnLandMass,
+  landApproxRadius,
+  type LandMass,
+  type LandPoint,
+} from './land'
 
 export interface WindAnchorPoint {
   id: string
@@ -16,6 +24,7 @@ export interface FixedRouteMap {
   start: { worldX: number; worldY: number }
   finish: { worldX: number; worldY: number; radius: number }
   windAnchors: WindAnchorPoint[]
+  lands?: LandMass[]
 }
 
 export interface WindDirectionRandomizationOptions {
@@ -34,6 +43,113 @@ function dist2(ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax
   const dy = by - ay
   return dx * dx + dy * dy
+}
+
+function randInt(minInclusive: number, maxInclusive: number): number {
+  const min = Math.ceil(minInclusive)
+  const max = Math.floor(maxInclusive)
+  return Math.floor(randRange(min, max + 1))
+}
+
+function landCenter(land: LandMass): LandPoint {
+  switch (land.kind) {
+    case 'circle':
+      return { x: land.worldX, y: land.worldY }
+    case 'rect':
+      return { x: land.worldX, y: land.worldY }
+    case 'polygon': {
+      if (land.points.length === 0) return { x: 0, y: 0 }
+      let sx = 0
+      let sy = 0
+      for (const p of land.points) {
+        sx += p.x
+        sy += p.y
+      }
+      return { x: sx / land.points.length, y: sy / land.points.length }
+    }
+  }
+}
+
+function landsTooClose(a: LandMass, b: LandMass, gap: number): boolean {
+  const ca = landCenter(a)
+  const cb = landCenter(b)
+  const ra = landApproxRadius(a)
+  const rb = landApproxRadius(b)
+  const minDist = ra + rb + gap
+  return dist2(ca.x, ca.y, cb.x, cb.y) < minDist * minDist
+}
+
+function buildIrregularPolygon(cx: number, cy: number, radius: number, vertexCount: number): LandPoint[] {
+  const points: LandPoint[] = []
+  for (let i = 0; i < vertexCount; i++) {
+    const baseA = (i / vertexCount) * Math.PI * 2
+    const a = baseA + randRange(-0.22, 0.22)
+    const r = radius * randRange(0.68, 1.18)
+    points.push({
+      x: cx + Math.cos(a) * r,
+      y: cy + Math.sin(a) * r,
+    })
+  }
+  return points
+}
+
+function randomLandMass(id: string): LandMass {
+  const cx = randRange(RAND_WORLD.xMin + 90, RAND_WORLD.xMax - 90)
+  const cy = randRange(RAND_WORLD.yMin + 90, RAND_WORLD.yMax - 90)
+  const kindRoll = Math.random()
+  if (kindRoll < 0.34) {
+    return {
+      id,
+      kind: 'circle',
+      worldX: cx,
+      worldY: cy,
+      radius: randRange(4.5, 10.5),
+    }
+  }
+  if (kindRoll < 0.68) {
+    return {
+      id,
+      kind: 'rect',
+      worldX: cx,
+      worldY: cy,
+      width: randRange(10, 22),
+      height: randRange(7, 17),
+      rotation: randRange(-Math.PI, Math.PI),
+    }
+  }
+  return {
+    id,
+    kind: 'polygon',
+    points: buildIrregularPolygon(cx, cy, randRange(5, 11), randInt(5, 8)),
+  }
+}
+
+function generateRandomLands(
+  start: { worldX: number; worldY: number },
+  finish: { worldX: number; worldY: number; radius: number }
+): LandMass[] {
+  const lands: LandMass[] = []
+  const targetCount = randInt(6, 10)
+  const startClearance = 14
+  const finishClearance = finish.radius + 12
+  const overlapGap = 4
+  let guard = 0
+  while (lands.length < targetCount && guard < 1500) {
+    guard++
+    const candidate = randomLandMass(`l${lands.length + 1}`)
+    if (isPointOnLandMass(candidate, start.worldX, start.worldY, startClearance)) continue
+    if (isPointOnLandMass(candidate, finish.worldX, finish.worldY, finishClearance)) continue
+    let ok = true
+    for (const existing of lands) {
+      if (landsTooClose(candidate, existing, overlapGap)) {
+        ok = false
+        break
+      }
+    }
+    if (!ok) continue
+    lands.push(candidate)
+  }
+  return lands
 }
 
 export interface GenerateRandomRouteMapOptions {
@@ -78,6 +194,7 @@ export function generateRandomRouteMap(options: GenerateRandomRouteMapOptions = 
     }
     if (dist2(start.worldX, start.worldY, finish.worldX, finish.worldY) >= minSF * minSF) break
   }
+  const lands = generateRandomLands(start, finish)
 
   const occupied: { x: number; y: number }[] = [
     { x: start.worldX, y: start.worldY },
@@ -91,6 +208,7 @@ export function generateRandomRouteMap(options: GenerateRandomRouteMapOptions = 
     const wx = randRange(RAND_WORLD.xMin + 50, RAND_WORLD.xMax - 50)
     const wy = randRange(RAND_WORLD.yMin + 50, RAND_WORLD.yMax - 50)
     let ok = true
+    if (isPointOnAnyLand(lands, wx, wy, 4)) continue
     for (const p of occupied) {
       if (dist2(wx, wy, p.x, p.y) < minSep2) {
         ok = false
@@ -117,6 +235,7 @@ export function generateRandomRouteMap(options: GenerateRandomRouteMapOptions = 
     start,
     finish,
     windAnchors,
+    lands,
   }
 }
 
@@ -159,6 +278,13 @@ export interface FixedMapBounds {
 export function getFixedMapBounds(map: FixedRouteMap, padding: number = 40): FixedMapBounds {
   const xs = [map.start.worldX, map.finish.worldX, ...map.windAnchors.map((a) => a.worldX)]
   const ys = [map.start.worldY, map.finish.worldY, ...map.windAnchors.map((a) => a.worldY)]
+  if (map.lands && map.lands.length > 0) {
+    for (const land of map.lands) {
+      const b = getLandBounds(land)
+      xs.push(b.minX, b.maxX)
+      ys.push(b.minY, b.maxY)
+    }
+  }
   const minX = Math.min(...xs) - padding
   const maxX = Math.max(...xs) + padding
   const minY = Math.min(...ys) - padding

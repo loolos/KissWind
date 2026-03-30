@@ -18,6 +18,43 @@ export const DEFAULT_ROUTE_MAP: FixedRouteMap = {
   label: 'Harbor Run',
   start: { worldX: -440, worldY: 240 },
   finish: { worldX: 520, worldY: -280, radius: 36 },
+  lands: [
+    {
+      id: 'l1',
+      kind: 'circle',
+      worldX: -250,
+      worldY: 210,
+      radius: 38,
+    },
+    {
+      id: 'l2',
+      kind: 'rect',
+      worldX: -10,
+      worldY: 40,
+      width: 88,
+      height: 54,
+      rotation: 0.35,
+    },
+    {
+      id: 'l3',
+      kind: 'polygon',
+      points: [
+        { x: 200, y: -70 },
+        { x: 255, y: -95 },
+        { x: 300, y: -40 },
+        { x: 286, y: 14 },
+        { x: 222, y: 28 },
+        { x: 174, y: -18 },
+      ],
+    },
+    {
+      id: 'l4',
+      kind: 'circle',
+      worldX: 385,
+      worldY: -248,
+      radius: 34,
+    },
+  ],
   windAnchors: [
     { id: 'w1', label: 'West Bay', worldX: -400, worldY: 340, direction: 0, strength: 2.6 },
     { id: 'w2', label: 'South Reach', worldX: -120, worldY: 480, direction: 1, strength: 3.0 },
