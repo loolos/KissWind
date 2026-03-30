@@ -502,10 +502,10 @@ export class World {
     this.landGraphics.clear()
     if (this.lands.length === 0) return
     const g = this.landGraphics
-    const fillColor = 0x7a8f52
-    const fillColor2 = 0x91a861
-    const edgeColor = 0x3d4f28
-    const beachColor = 0xcbb37b
+    const fillColor = 0x6b5344
+    const fillColor2 = 0x7d5f48
+    const edgeColor = 0x3a2c22
+    const beachColor = 0x5a4636
 
     for (const land of this.lands) {
       if (land.kind === 'circle') {

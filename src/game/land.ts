@@ -220,3 +220,150 @@ export function firstLandHitAlongSegment(
   }
   return null
 }
+
+function rotateVecToWorld(lx: number, ly: number, rot: number): { x: number; y: number } {
+  const c = Math.cos(rot)
+  const s = Math.sin(rot)
+  return { x: lx * c - ly * s, y: lx * s + ly * c }
+}
+
+function closestPointOnPolygonBoundary(points: LandPoint[], x: number, y: number): LandPoint {
+  if (points.length < 2) return { x, y }
+  let bestD = Infinity
+  let bestX = x
+  let bestY = y
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i]
+    const b = points[(i + 1) % points.length]
+    const vx = b.x - a.x
+    const vy = b.y - a.y
+    const wx = x - a.x
+    const wy = y - a.y
+    const vv = vx * vx + vy * vy
+    const t = vv <= 1e-12 ? 0 : Math.max(0, Math.min(1, (wx * vx + wy * vy) / vv))
+    const qx = a.x + vx * t
+    const qy = a.y + vy * t
+    const d = Math.hypot(x - qx, y - qy)
+    if (d < bestD) {
+      bestD = d
+      bestX = qx
+      bestY = qy
+    }
+  }
+  return { x: bestX, y: bestY }
+}
+
+/** Water-side unit normal at `worldX/worldY` for the nearest expanded land (margin = boat hull). */
+export function nearestLandOutwardNormal(
+  lands: readonly LandMass[] | undefined,
+  worldX: number,
+  worldY: number,
+  margin: number
+): { nx: number; ny: number } | null {
+  if (!lands || lands.length === 0) return null
+  let bestAbs = Infinity
+  let bestNx = 0
+  let bestNy = 0
+
+  for (const land of lands) {
+    if (land.kind === 'circle') {
+      const dx = worldX - land.worldX
+      const dy = worldY - land.worldY
+      const dist = Math.hypot(dx, dy)
+      if (dist < 1e-5) continue
+      const r = Math.max(0, land.radius + margin)
+      const absGap = Math.abs(dist - r)
+      if (absGap < bestAbs) {
+        bestAbs = absGap
+        bestNx = dx / dist
+        bestNy = dy / dist
+      }
+      continue
+    }
+
+    if (land.kind === 'rect') {
+      const local = rotateIntoLocal(worldX, worldY, land.worldX, land.worldY, land.rotation)
+      const hx = Math.max(0, land.width * 0.5 + margin)
+      const hy = Math.max(0, land.height * 0.5 + margin)
+      const cx = Math.max(-hx, Math.min(hx, local.x))
+      const cy = Math.max(-hy, Math.min(hy, local.y))
+      let lx = local.x - cx
+      let ly = local.y - cy
+      const len = Math.hypot(lx, ly)
+      if (len < 1e-5) {
+        const ax = Math.abs(local.x) / hx
+        const ay = Math.abs(local.y) / hy
+        if (ax > ay) {
+          lx = Math.sign(local.x) || 1
+          ly = 0
+        } else {
+          lx = 0
+          ly = Math.sign(local.y) || 1
+        }
+      } else {
+        lx /= len
+        ly /= len
+      }
+      const w = rotateVecToWorld(lx, ly, land.rotation)
+      const gap = Math.hypot(local.x - cx, local.y - cy)
+      if (gap < bestAbs) {
+        bestAbs = gap
+        bestNx = w.x
+        bestNy = w.y
+      }
+      continue
+    }
+
+    const q = closestPointOnPolygonBoundary(land.points, worldX, worldY)
+    const qdx = worldX - q.x
+    const qdy = worldY - q.y
+    const qlen = Math.hypot(qdx, qdy)
+    const inside = pointInPolygon(land.points, worldX, worldY)
+    let nx: number
+    let ny: number
+    if (qlen < 1e-5) {
+      const c = polygonCentroid(land.points)
+      const ux = worldX - c.x
+      const uy = worldY - c.y
+      const ulen = Math.hypot(ux, uy)
+      if (ulen < 1e-5) continue
+      nx = ux / ulen
+      ny = uy / ulen
+    } else if (inside) {
+      nx = -qdx / qlen
+      ny = -qdy / qlen
+    } else {
+      nx = qdx / qlen
+      ny = qdy / qlen
+    }
+    const edgeD = polygonEdgeDistance(land.points, worldX, worldY)
+    const polyMetric = inside ? edgeD : Math.max(0, edgeD - margin)
+    if (polyMetric < bestAbs) {
+      bestAbs = polyMetric
+      bestNx = nx
+      bestNy = ny
+    }
+  }
+
+  if (bestAbs === Infinity) return null
+  const nlen = Math.hypot(bestNx, bestNy)
+  if (nlen < 1e-8) return null
+  return { nx: bestNx / nlen, ny: bestNy / nlen }
+}
+
+/**
+ * Zero velocity along the land normal (perpendicular to the shoreline tangent in the water plane).
+ * Remaining motion is purely tangential; `normal` points from land into water.
+ */
+export function projectVelocityAlongLand(
+  velX: number,
+  velY: number,
+  nx: number,
+  ny: number
+): { velX: number; velY: number } {
+  const dot = velX * nx + velY * ny
+  return {
+    velX: velX - dot * nx,
+    velY: velY - dot * ny,
+  }
+}
