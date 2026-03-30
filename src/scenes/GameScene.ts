@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import { Boat } from '../game/Boat'
 import { Wind } from '../game/Wind'
 import { World } from '../game/World'
+import { hullEllipseSemiAxesWorld } from '../game/Boat'
 import {
   FIXED_ROUTE_MAP,
   generateRandomRouteMap,
@@ -9,6 +10,7 @@ import {
   type FixedMapBounds,
   type FixedRouteMap,
 } from '../game/fixedMap'
+import { firstLandHitAlongSegment } from '../game/land'
 import {
   PhysicsState,
   ThrustResult,
@@ -145,7 +147,7 @@ export class GameScene extends Phaser.Scene {
     this.wind = new Wind(this.routeMap)
     this.wind.setMinimapHomingRefFromViewport(w, h)
     this.waterCurrent = new WaterCurrent()
-    this.world = new World(this)
+    this.world = new World(this, this.routeMap)
     this.boat = new Boat(this)
     this.seaLife = new SeaLifeAmbience(this)
 
@@ -566,6 +568,8 @@ export class GameScene extends Phaser.Scene {
       curY
     )
 
+    const hitLand = this.resolveLandCollision(prevPos.x, prevPos.y)
+
     const hit = this.world.applyBoatDebrisCollision(
       this.physState.posX,
       this.physState.posY,
@@ -580,8 +584,15 @@ export class GameScene extends Phaser.Scene {
     const gx = this.physState.velX + curX
     const gy = this.physState.velY + curY
     this.currentSpeed = Math.sqrt(gx * gx + gy * gy)
-    if (this.currentSpeed > 1e-6) this.currentHeading = Math.atan2(gy, gx)
-    this.currentAcceleration = dt > 0 ? (this.currentSpeed - prevGroundSpeed) / dt : 0
+    if (hitLand) {
+      this.physState.velX = 0
+      this.physState.velY = 0
+      this.currentSpeed = 0
+      this.currentAcceleration = 0
+    } else {
+      if (this.currentSpeed > 1e-6) this.currentHeading = Math.atan2(gy, gx)
+      this.currentAcceleration = dt > 0 ? (this.currentSpeed - prevGroundSpeed) / dt : 0
+    }
 
     const dx = this.physState.posX - prevPos.x
     const dy = this.physState.posY - prevPos.y
@@ -789,6 +800,49 @@ export class GameScene extends Phaser.Scene {
     g.lineStyle(1.1, 0x44ff88, 0.9)
     g.strokeCircle(finish.x, finish.y, finishR)
 
+    const lands = this.routeMap.lands ?? []
+    for (const land of lands) {
+      g.fillStyle(0x8da35a, 0.9)
+      g.lineStyle(1, 0x354621, 0.95)
+      if (land.kind === 'circle') {
+        const p = toMini(land.worldX, land.worldY)
+        g.fillCircle(p.x, p.y, Math.max(2.5, land.radius * scale))
+        g.strokeCircle(p.x, p.y, Math.max(2.5, land.radius * scale))
+        continue
+      }
+      if (land.kind === 'rect') {
+        const hx = land.width * 0.5
+        const hy = land.height * 0.5
+        const c = Math.cos(land.rotation)
+        const s = Math.sin(land.rotation)
+        const corners = [
+          { x: -hx, y: -hy },
+          { x: hx, y: -hy },
+          { x: hx, y: hy },
+          { x: -hx, y: hy },
+        ].map((pt) => {
+          const wx = land.worldX + pt.x * c - pt.y * s
+          const wy = land.worldY + pt.x * s + pt.y * c
+          return toMini(wx, wy)
+        })
+        g.beginPath()
+        g.moveTo(corners[0].x, corners[0].y)
+        for (let i = 1; i < corners.length; i++) g.lineTo(corners[i].x, corners[i].y)
+        g.closePath()
+        g.fillPath()
+        g.strokePath()
+        continue
+      }
+      if (land.points.length < 3) continue
+      const pts = land.points.map((pt) => toMini(pt.x, pt.y))
+      g.beginPath()
+      g.moveTo(pts[0].x, pts[0].y)
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y)
+      g.closePath()
+      g.fillPath()
+      g.strokePath()
+    }
+
     for (const a of this.routeMap.windAnchors) {
       const p = toMini(a.worldX, a.worldY)
       g.fillStyle(0xaad8ff, 0.95)
@@ -841,6 +895,30 @@ export class GameScene extends Phaser.Scene {
     g.closePath()
     g.fillPath()
     g.strokePath()
+  }
+
+  private resolveLandCollision(prevX: number, prevY: number): boolean {
+    const lands = this.world.getLands()
+    if (lands.length === 0) return false
+    const hull = hullEllipseSemiAxesWorld(this.world.mapZoom)
+    const hullMargin = Math.max(hull.halfLen, hull.halfBeam)
+    const hitT = firstLandHitAlongSegment(
+      lands,
+      prevX,
+      prevY,
+      this.physState.posX,
+      this.physState.posY,
+      hullMargin
+    )
+    if (hitT === null) return false
+    const safeT = Math.max(0, hitT - 0.01)
+    this.physState.posX = prevX + (this.physState.posX - prevX) * safeT
+    this.physState.posY = prevY + (this.physState.posY - prevY) * safeT
+    this.physState.velX = 0
+    this.physState.velY = 0
+    this.physState.accX = 0
+    this.physState.accY = 0
+    return true
   }
 
   /** Main-view marker at `routeMap.finish` using the same boat-centered projection as the ocean. */
