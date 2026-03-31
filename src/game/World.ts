@@ -16,6 +16,8 @@ const SHARD_TTL_MIN = 10
 const SHARD_TTL_MAX = 16
 /** Tighten debris circle vs drawn sprite so hits match visuals. */
 const DEBRIS_RADIUS_VIS_SCALE = 0.68
+/** Buoys / planks / barrels spawned around the viewport (was 8). */
+const DEBRIS_COUNT = 5
 /** Boat velocity loss along impact (~50% gentler than first tuning). */
 const BOAT_SLOW_PLANK = 0.17
 const BOAT_SLOW_BUOY = 0.11
@@ -104,7 +106,7 @@ export class World {
 
   private initDebris(boatX: number, boatY: number): void {
     const { halfW, halfH } = this.viewportHalfExtents()
-    const count = 8
+    const count = DEBRIS_COUNT
 
     const debrisTypes: Array<'buoy' | 'plank' | 'barrel'> = ['buoy', 'plank', 'barrel']
     const colors = [0xff6633, 0xaa8855, 0x886644, 0xffaa33, 0xcc4422]

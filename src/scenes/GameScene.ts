@@ -32,6 +32,7 @@ import { AmbientMusic } from '../game/AmbientMusic'
 import { WaterCurrent } from '../game/WaterCurrent'
 import { getMiniMapPixelLayout } from '../game/minimapLayout'
 import { SeaLifeAmbience } from '../game/SeaLifeAmbience'
+import { playLandStunCollision } from '../game/LandStunSfx'
 
 export class GameScene extends Phaser.Scene {
   // Core systems
@@ -119,6 +120,12 @@ export class GameScene extends Phaser.Scene {
   private readonly LAND_STUN_BASE_SEC = 0.32
   private readonly LAND_STUN_PER_IMPACT_SEC = 0.11
   private readonly LAND_STUN_MAX_SEC = 2.4
+  /** `impact - LAND_IMPACT_EPS` at which hull/sail spin rate reaches max (world speed units). */
+  private readonly LAND_STUN_SPIN_IMPACT_REF = 8
+  private readonly LAND_STUN_SPIN_HULL_MIN_HZ = 0.42
+  private readonly LAND_STUN_SPIN_HULL_MAX_HZ = 2.95
+  private readonly LAND_STUN_SPIN_SAIL_MIN_HZ = 0.52
+  private readonly LAND_STUN_SPIN_SAIL_MAX_HZ = 3.35
 
   constructor() {
     super({ key: 'GameScene' })
@@ -982,10 +989,17 @@ export class GameScene extends Phaser.Scene {
       )
       this.landStunTotalSec = dur
       this.landStunRemainingSec = dur
-      const hAmp = Math.min(2.9, 1.05 + impact * 0.24)
-      const sAmp = Math.min(3.4, 1.35 + impact * 0.3)
-      this.landStunHeadingSpin0 = Math.PI * 2 * hAmp * (Math.random() < 0.5 ? -1 : 1)
-      this.landStunSailSpin0 = Math.PI * 2 * sAmp * (Math.random() < 0.5 ? -1 : 1)
+      const impactExcess = Math.max(0, impact - this.LAND_IMPACT_EPS)
+      const spinT = Math.min(1, impactExcess / this.LAND_STUN_SPIN_IMPACT_REF)
+      const hullHz =
+        this.LAND_STUN_SPIN_HULL_MIN_HZ +
+        spinT * (this.LAND_STUN_SPIN_HULL_MAX_HZ - this.LAND_STUN_SPIN_HULL_MIN_HZ)
+      const sailHz =
+        this.LAND_STUN_SPIN_SAIL_MIN_HZ +
+        spinT * (this.LAND_STUN_SPIN_SAIL_MAX_HZ - this.LAND_STUN_SPIN_SAIL_MIN_HZ)
+      this.landStunHeadingSpin0 = Math.PI * 2 * hullHz * (Math.random() < 0.5 ? -1 : 1)
+      this.landStunSailSpin0 = Math.PI * 2 * sailHz * (Math.random() < 0.5 ? -1 : 1)
+      playLandStunCollision(impact)
     } else {
       const ground = projectVelocityAlongLand(gx, gy, n.nx, n.ny)
       this.physState.velX = ground.velX - currentX
