@@ -54,9 +54,9 @@ export const DEFAULT_ROUTE_MAP: FixedRouteMap = {
     {
       id: 'l4',
       kind: 'circle',
-      worldX: 695,
-      worldY: -355,
-      radius: 78,
+      worldX: -105,
+      worldY: -155,
+      radius: 85,
     },
     {
       id: 'l5',

@@ -109,6 +109,17 @@ export class GameScene extends Phaser.Scene {
   /** Extra bottom margin so mobile browser bars/home indicator do not cover HUD. */
   private readonly HUD_BOTTOM_MARGIN = 18
 
+  /** Land hit: bounce + dizzy spin; duration scales with inward ground speed (before bounce). */
+  private landStunRemainingSec = 0
+  private landStunTotalSec = 0
+  private landStunHeadingSpin0 = 0
+  private landStunSailSpin0 = 0
+  private readonly LAND_IMPACT_EPS = 0.06
+  private readonly LAND_BOUNCE_RETENTION = 0.64
+  private readonly LAND_STUN_BASE_SEC = 0.32
+  private readonly LAND_STUN_PER_IMPACT_SEC = 0.11
+  private readonly LAND_STUN_MAX_SEC = 2.4
+
   constructor() {
     super({ key: 'GameScene' })
   }
@@ -130,6 +141,10 @@ export class GameScene extends Phaser.Scene {
     this.isDragging = false
     this.mapZoomIndex = 0
     this.pinchBaseDist = 0
+    this.landStunRemainingSec = 0
+    this.landStunTotalSec = 0
+    this.landStunHeadingSpin0 = 0
+    this.landStunSailSpin0 = 0
     const routeOverride = this.registry.get('routeMapOverride') as FixedRouteMap | undefined
     if (routeOverride) {
       this.routeMap = routeOverride
@@ -421,6 +436,7 @@ export class GameScene extends Phaser.Scene {
 
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
     if (this.gameOver || !this.raceLive) return
+    if (this.landStunRemainingSec > 0) return
     if (this.isPointerOverMapZoom(pointer)) return
     const touches = this.activeTouchPointers()
     if (touches.length >= 2) {
@@ -441,6 +457,7 @@ export class GameScene extends Phaser.Scene {
       return
     }
     if (!this.isDragging) return
+    if (this.landStunRemainingSec > 0) return
 
     const cx = this.scale.width / 2
     const cy = this.scale.height / 2
@@ -552,12 +569,24 @@ export class GameScene extends Phaser.Scene {
     this.currentWindDirection = localWind.direction
     this.currentWindStrength = localWind.strength
 
-    this.boat.stepSailTowardTarget(dt)
+    if (this.landStunRemainingSec <= 0) {
+      this.boat.stepSailTowardTarget(dt)
+    }
     this.lastThrust = computeThrust(
       this.boat.sailAngle,
       this.currentWindDirection,
       this.currentWindStrength
     )
+    if (this.landStunRemainingSec > 0) {
+      this.lastThrust = {
+        ...this.lastThrust,
+        thrustX: 0,
+        thrustY: 0,
+        thrustMag: 0,
+        multiplier: 0,
+        quality: 'gray',
+      }
+    }
 
     const prevPos = { x: this.physState.posX, y: this.physState.posY }
     const prevGx = this.physState.velX + curX
@@ -589,7 +618,19 @@ export class GameScene extends Phaser.Scene {
     const gx = this.physState.velX + curX
     const gy = this.physState.velY + curY
     this.currentSpeed = Math.sqrt(gx * gx + gy * gy)
-    if (this.currentSpeed > 1e-6) this.currentHeading = Math.atan2(gy, gx)
+    if (this.landStunRemainingSec > 0) {
+      const spinEase = this.landStunRemainingSec / Math.max(this.landStunTotalSec, 1e-6)
+      this.currentHeading += this.landStunHeadingSpin0 * spinEase * dt
+      this.boat.sailAngle += this.landStunSailSpin0 * spinEase * dt
+      this.landStunRemainingSec -= dt
+      if (this.landStunRemainingSec <= 0) {
+        this.landStunRemainingSec = 0
+        if (this.currentSpeed > 1e-6) this.currentHeading = Math.atan2(gy, gx)
+        this.boat.targetSailAngle = this.boat.sailAngle
+      }
+    } else if (this.currentSpeed > 1e-6) {
+      this.currentHeading = Math.atan2(gy, gx)
+    }
     this.currentAcceleration = dt > 0 ? (this.currentSpeed - prevGroundSpeed) / dt : 0
 
     const dx = this.physState.posX - prevPos.x
@@ -924,9 +965,32 @@ export class GameScene extends Phaser.Scene {
 
     const gx = this.physState.velX + currentX
     const gy = this.physState.velY + currentY
-    const ground = projectVelocityAlongLand(gx, gy, n.nx, n.ny)
-    this.physState.velX = ground.velX - currentX
-    this.physState.velY = ground.velY - currentY
+    const dotN = gx * n.nx + gy * n.ny
+    /** Inward ground speed into land (same as magnitude removed by `projectVelocityAlongLand`). */
+    const impact = Math.max(0, -dotN)
+
+    if (impact > this.LAND_IMPACT_EPS) {
+      const gRx = gx - 2 * dotN * n.nx
+      const gRy = gy - 2 * dotN * n.ny
+      const s = this.LAND_BOUNCE_RETENTION
+      this.physState.velX = gRx * s - currentX
+      this.physState.velY = gRy * s - currentY
+
+      const dur = Math.min(
+        this.LAND_STUN_MAX_SEC,
+        this.LAND_STUN_BASE_SEC + this.LAND_STUN_PER_IMPACT_SEC * impact
+      )
+      this.landStunTotalSec = dur
+      this.landStunRemainingSec = dur
+      const hAmp = Math.min(2.9, 1.05 + impact * 0.24)
+      const sAmp = Math.min(3.4, 1.35 + impact * 0.3)
+      this.landStunHeadingSpin0 = Math.PI * 2 * hAmp * (Math.random() < 0.5 ? -1 : 1)
+      this.landStunSailSpin0 = Math.PI * 2 * sAmp * (Math.random() < 0.5 ? -1 : 1)
+    } else {
+      const ground = projectVelocityAlongLand(gx, gy, n.nx, n.ny)
+      this.physState.velX = ground.velX - currentX
+      this.physState.velY = ground.velY - currentY
+    }
   }
 
   /** Main-view marker at `routeMap.finish` using the same boat-centered projection as the ocean. */
@@ -948,23 +1012,23 @@ export class GameScene extends Phaser.Scene {
     if (sx < -margin || sy < -margin || sx > viewW + margin || sy > viewH + margin) return
 
     const g = this.hudGraphics
-    const poleH = 22
+    const poleH = 32
     const poleTopY = sy - poleH
-    const tipX = sx + 15
-    const midY = poleTopY + 9
+    const tipX = sx + 22
+    const midY = poleTopY + 13
 
-    g.lineStyle(2.2, 0x2a1810, 0.95)
+    g.lineStyle(3, 0x2a1810, 0.95)
     g.beginPath()
     g.moveTo(sx, sy)
     g.lineTo(sx, poleTopY)
     g.strokePath()
 
     g.fillStyle(0xcc2222, 0.95)
-    g.lineStyle(1.2, 0x5c1010, 0.9)
+    g.lineStyle(1.6, 0x5c1010, 0.9)
     g.beginPath()
     g.moveTo(sx, poleTopY)
     g.lineTo(tipX, midY)
-    g.lineTo(sx, poleTopY + 14)
+    g.lineTo(sx, poleTopY + 20)
     g.closePath()
     g.fillPath()
     g.strokePath()
