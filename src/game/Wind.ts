@@ -52,19 +52,8 @@ const ZONE_TARGET_MAX = 16
 const INITIAL_ZONE_COUNT = 8
 const SPAWN_PER_TICK = 4
 
-/** Fraction of spawns biased toward boat heading (rest: full circle). */
-const SPAWN_FORWARD_BIAS = 0.72
-/** Half-width of forward cone (rad): ±π/2 = semicircle ahead of velocity. */
-const SPAWN_FORWARD_HALF_WIDTH = Math.PI / 2
-
 /** Gust zone: at disc center, effective strength → `strength` × this (coefficient on base wind). */
 const GUST_ZONE_MULTIPLIER = 3.0
-
-/**
- * ~50% spawns use this nearer band (still mostly off-screen but reachable);
- * rest use the farther band so you still sail into large gusts.
- */
-const NEAR_SPAWN_FRAC = 0.5
 
 /** How often to recompute which anchors are in range (seconds). */
 const WIND_ANCHOR_SCAN_INTERVAL = 2
@@ -99,6 +88,7 @@ export interface WindZone {
   radius: number
   type: 'gust' | 'dead'
   multiplier: number
+  routeProgress: number
 }
 
 export class Wind {
@@ -112,6 +102,13 @@ export class Wind {
   zones: WindZone[]
   private zoneTimer: number
   private zoneDuration: number
+  private readonly routeStartX: number
+  private readonly routeStartY: number
+  private readonly routeDirX: number
+  private readonly routeDirY: number
+  private readonly routePerpX: number
+  private readonly routePerpY: number
+  private readonly routeLength: number
 
   /** Refreshed every `WIND_ANCHOR_SCAN_INTERVAL` s at boat position; sampling only blends these. */
   private windActiveAnchors: WindAnchorPoint[] = []
@@ -143,10 +140,20 @@ export class Wind {
     this.zones = []
     this.zoneTimer = 0
     this.zoneDuration = 5
-  }
-
-  private maxZoneRadiusWorld(): number {
-    return (ZONE_RADIUS_BASE_MAX / this.mapZoom) * ZONE_RADIUS_MULT_MAX
+    const sx = fixedMap.start.worldX
+    const sy = fixedMap.start.worldY
+    const fx = fixedMap.finish.worldX
+    const fy = fixedMap.finish.worldY
+    const dx = fx - sx
+    const dy = fy - sy
+    const len = Math.hypot(dx, dy)
+    this.routeLength = Math.max(1, len)
+    this.routeDirX = dx / this.routeLength
+    this.routeDirY = dy / this.routeLength
+    this.routePerpX = -this.routeDirY
+    this.routePerpY = this.routeDirX
+    this.routeStartX = sx
+    this.routeStartY = sy
   }
 
   private zoneKeepDistance(): number {
@@ -219,16 +226,45 @@ export class Wind {
     }
   }
 
-  private sampleSpawnAngle(boatHeading?: number): number {
-    if (boatHeading === undefined) {
-      return Math.random() * Math.PI * 2
+  private routeProgressAt(worldX: number, worldY: number): number {
+    const relX = worldX - this.routeStartX
+    const relY = worldY - this.routeStartY
+    const t = (relX * this.routeDirX + relY * this.routeDirY) / this.routeLength
+    return Math.max(0, Math.min(1, t))
+  }
+
+  private sampleSpawnProgress(boatProgress: number): number {
+    const windowStart = Math.max(0, boatProgress - 0.12)
+    const windowEnd = Math.min(1, boatProgress + 0.88)
+    const binCount = 8
+    const counts = new Array<number>(binCount).fill(0)
+    for (const zone of this.zones) {
+      if (zone.routeProgress < windowStart || zone.routeProgress > windowEnd) continue
+      const span = Math.max(1e-6, windowEnd - windowStart)
+      const u = (zone.routeProgress - windowStart) / span
+      const idx = Math.max(0, Math.min(binCount - 1, Math.floor(u * binCount)))
+      counts[idx]++
     }
-    if (Math.random() < SPAWN_FORWARD_BIAS) {
-      return normalizeAngle(
-        boatHeading + (Math.random() - 0.5) * 2 * SPAWN_FORWARD_HALF_WIDTH
-      )
+    let minCount = counts[0]
+    for (let i = 1; i < counts.length; i++) minCount = Math.min(minCount, counts[i])
+    const candidates: number[] = []
+    for (let i = 0; i < counts.length; i++) if (counts[i] === minCount) candidates.push(i)
+    const chosen = candidates[Math.floor(Math.random() * candidates.length)]
+    const span = Math.max(1e-6, windowEnd - windowStart)
+    const binW = span / binCount
+    const jitter = 0.15 + Math.random() * 0.7
+    return Math.max(0, Math.min(1, windowStart + (chosen + jitter) * binW))
+  }
+
+  private isZoneOverlapping(worldX: number, worldY: number, radius: number): boolean {
+    const minGap = 80 / this.mapZoom
+    for (const zone of this.zones) {
+      const dx = worldX - zone.worldX
+      const dy = worldY - zone.worldY
+      const minDist = (zone.radius + radius) * 0.75 + minGap
+      if (dx * dx + dy * dy < minDist * minDist) return true
     }
-    return Math.random() * Math.PI * 2
+    return false
   }
 
   spawnZone(
@@ -238,7 +274,6 @@ export class Wind {
     boatHeading?: number
   ): void {
     for (let attempt = 0; attempt < 18; attempt++) {
-      const angle = this.sampleSpawnAngle(viewport !== undefined ? boatHeading : undefined)
       const z = this.mapZoom
       const radiusMult =
         ZONE_RADIUS_MULT_MIN + Math.random() * (ZONE_RADIUS_MULT_MAX - ZONE_RADIUS_MULT_MIN)
@@ -247,29 +282,27 @@ export class Wind {
         Math.random() * (ZONE_RADIUS_BASE_MAX - ZONE_RADIUS_BASE_MIN)
       const radius = (base / z) * radiusMult
 
-      let dist: number
-      if (viewport) {
-        const diag = Math.sqrt(viewport.halfW * viewport.halfW + viewport.halfH * viewport.halfH)
-        const rMax = this.maxZoneRadiusWorld()
-        const margin = 120 / z
-        if (Math.random() < NEAR_SPAWN_FRAC) {
-          // Closer ring: easier to intersect while playing; inner edge can graze the view.
-          const distMinNear = diag + 30 / z + Math.random() * (40 / z)
-          const distRangeNear = (400 + Math.random() * 500) / z
-          dist = distMinNear + Math.random() * distRangeNear
-        } else {
-          const distMinFar = diag + rMax + margin
-          const distRangeFar = (700 + Math.random() * 600) / z
-          dist = distMinFar + Math.random() * distRangeFar
-        }
-      } else {
-        dist = (300 + Math.random() * 600) / z
-      }
-
-      const worldX = centerX + Math.cos(angle) * dist
-      const worldY = centerY + Math.sin(angle) * dist
+      const boatProgress = this.routeProgressAt(centerX, centerY)
+      const routeProgress = this.sampleSpawnProgress(boatProgress)
+      const routeDist = routeProgress * this.routeLength
+      const corridorHalfWidth = 960 / z
+      const lateralOffset = (Math.random() - 0.5) * 2 * corridorHalfWidth
+      const jitterScale = viewport ? 220 / z : 140 / z
+      const jitterX = (Math.random() - 0.5) * 2 * jitterScale
+      const jitterY = (Math.random() - 0.5) * 2 * jitterScale
+      const worldX =
+        this.routeStartX +
+        this.routeDirX * routeDist +
+        this.routePerpX * lateralOffset +
+        jitterX
+      const worldY =
+        this.routeStartY +
+        this.routeDirY * routeDist +
+        this.routePerpY * lateralOffset +
+        jitterY
       // Keep local wind zones completely away from land masses.
       if (isPointOnAnyLand(this.fixedMap.lands, worldX, worldY, radius + 6)) continue
+      if (this.isZoneOverlapping(worldX, worldY, radius)) continue
 
       const type = Math.random() < 0.6 ? 'gust' : 'dead'
       this.zones.push({
@@ -278,6 +311,7 @@ export class Wind {
         radius,
         type,
         multiplier: type === 'gust' ? GUST_ZONE_MULTIPLIER : 0.3,
+        routeProgress,
       })
       return
     }
