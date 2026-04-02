@@ -36,6 +36,7 @@ const DECK_LINE = 0x88c4ee
 const STRIPE_PINK = 0xe88a9a
 const MAST_BODY = 0x2a4a7a
 const MAST_CAP = 0x4a7acc
+const RAINBOW_BANDS = [0xff6b6b, 0xffb74d, 0xffeb3b, 0x66bb6a, 0x4fc3f7, 0x9575cd] as const
 
 export class Boat {
   private scene: Phaser.Scene
@@ -295,18 +296,22 @@ export class Boat {
 
     let sailColor: number
     let sailAlpha: number
+    let accentColor: number
     switch (this.sailQuality) {
       case 'green':
         sailColor = 0x44dd88
         sailAlpha = 0.92
+        accentColor = 0x7cf0b0
         break
       case 'yellow':
         sailColor = 0xffdd44
         sailAlpha = 0.92
+        accentColor = 0xfff08a
         break
       case 'gray':
         sailColor = 0x9aa0a8
         sailAlpha = 0.88
+        accentColor = 0xc7ced9
         break
     }
 
@@ -373,20 +378,32 @@ export class Boat {
       by: number,
       cx2: number,
       cy2: number,
+      mainColor: number,
       alpha: number
     ): void => {
-      g.lineStyle(1.1 * this.visScale, STRIPE_PINK, 0.55 * alpha)
-      for (let s = 1; s <= 5; s++) {
-        const t = 0.12 + s * 0.13
+      const stripeColors =
+        this.sailQuality === 'gray'
+          ? [STRIPE_PINK, mainColor, accentColor, STRIPE_PINK, mainColor]
+          : RAINBOW_BANDS
+      for (let s = 0; s < stripeColors.length; s++) {
+        const t = 0.16 + s * 0.11
         const q1x = ax + t * (cx2 - ax)
         const q1y = ay + t * (cy2 - ay)
         const q2x = bx + t * (cx2 - bx)
         const q2y = by + t * (cy2 - by)
+        g.lineStyle(1.1 * this.visScale, stripeColors[s], 0.58 * alpha)
         g.beginPath()
         g.moveTo(q1x, q1y)
         g.lineTo(q2x, q2y)
         g.strokePath()
       }
+
+      const centerT = 0.42
+      const centerU = 0.48
+      const px = ax + centerT * (cx2 - ax) + (bx - ax) * centerU * 0.35
+      const py = ay + centerT * (cy2 - ay) + (by - ay) * centerU * 0.35
+      g.fillStyle(accentColor, 0.5 * alpha)
+      g.fillCircle(px, py, 2.2 * this.visScale)
     }
 
     const footPort = this.projWorld(footPort_wx, footPort_wy, 0, cx, cy)
@@ -431,6 +448,7 @@ export class Boat {
       smallPanel[3],
       smallPanel[4],
       smallPanel[5],
+      sailColor,
       sailAlpha * 0.82
     )
 
@@ -451,6 +469,7 @@ export class Boat {
       bigPanel[3],
       bigPanel[4],
       bigPanel[5],
+      sailColor,
       sailAlpha
     )
 
@@ -486,7 +505,16 @@ export class Boat {
       sailColor,
       sailAlpha * 0.72
     )
-    drawStripes(footOppA.x, footOppA.y, mastTop.x, mastTop.y, oppClew.x, oppClew.y, sailAlpha * 0.72)
+    drawStripes(
+      footOppA.x,
+      footOppA.y,
+      mastTop.x,
+      mastTop.y,
+      oppClew.x,
+      oppClew.y,
+      sailColor,
+      sailAlpha * 0.72
+    )
 
     g.lineStyle(1.2 * this.visScale, 0x4a3010, 0.65)
     g.beginPath()
