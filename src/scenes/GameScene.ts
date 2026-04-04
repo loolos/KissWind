@@ -968,7 +968,7 @@ export class GameScene extends Phaser.Scene {
 
     g.fillStyle(0xffe188, 1)
     g.fillCircle(start.x, start.y, 3.2)
-    if (!this.reachedFinish) this.drawMinimapRedFlag(g, finish.x, finish.y)
+    this.drawMinimapRedFlag(g, finish.x, finish.y)
 
     g.fillStyle(0x4488ff, 1)
     g.fillCircle(boat.x, boat.y, 3.4)
@@ -1072,8 +1072,6 @@ export class GameScene extends Phaser.Scene {
 
   /** Main-view marker at `routeMap.finish` using the same boat-centered projection as the ocean. */
   private drawFinishWorldFlag(viewW: number, viewH: number): void {
-    if (this.reachedFinish) return
-
     const { worldX: fx, worldY: fy } = this.routeMap.finish
     const { sx, sy } = worldToScreen(
       fx,
