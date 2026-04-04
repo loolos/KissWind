@@ -35,11 +35,17 @@ export interface ThrustResult {
  * sailAngle: the absolute angle of the sail in world space (radians)
  * windDir:   direction the wind is blowing TOWARD (radians)
  * windStrength: scalar wind strength
+ * extraWindBoostMagnitude: optional gust along sail normal (same units as wind strength).
+ * When > 0, ±n̂ follows the projection sign of `(refVelX,refVelY)` on n̂ (boat velocity vs water);
+ * if |v|≈0 or v⊥n̂, falls back to `wind·n̂`.
  */
 export function computeThrust(
   sailAngle: number,
   windDir: number,
-  windStrength: number
+  windStrength: number,
+  extraWindBoostMagnitude: number = 0,
+  boostRefVelX?: number,
+  boostRefVelY?: number
 ): ThrustResult {
   // Wind vector (direction wind blows toward)
   const windVx = Math.cos(windDir)
@@ -77,7 +83,30 @@ export function computeThrust(
     quality = 'gray'
   }
 
-  const forceScale = windOnNormal * windStrength * multiplier * 3
+  let boostSign = 1
+  if (extraWindBoostMagnitude > 1e-8) {
+    const projSign = (rx: number, ry: number): number | null => {
+      const d = rx * sailNx + ry * sailNy
+      if (Math.abs(d) > 1e-6) return Math.sign(d)
+      return null
+    }
+    const windFallback = Math.abs(windOnNormal) > 1e-5 ? Math.sign(windOnNormal) : 1
+
+    const fromVel =
+      boostRefVelX !== undefined &&
+      boostRefVelY !== undefined &&
+      boostRefVelX * boostRefVelX + boostRefVelY * boostRefVelY > 1e-8
+
+    if (fromVel) {
+      const sv = projSign(boostRefVelX!, boostRefVelY!)
+      boostSign = sv !== null ? sv : windFallback
+    } else {
+      boostSign = windFallback
+    }
+  }
+
+  const forceScale =
+    windOnNormal * windStrength * multiplier * 3 + boostSign * extraWindBoostMagnitude * multiplier * 3
   const thrustX = sailNx * forceScale
   const thrustY = sailNy * forceScale
   const thrustMag = Math.sqrt(thrustX * thrustX + thrustY * thrustY)

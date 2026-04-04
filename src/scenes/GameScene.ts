@@ -33,6 +33,8 @@ import { WaterCurrent } from '../game/WaterCurrent'
 import { getMiniMapPixelLayout } from '../game/minimapLayout'
 import { SeaLifeAmbience } from '../game/SeaLifeAmbience'
 import { playLandStunCollision } from '../game/LandStunSfx'
+import { MapBuffPickups } from '../game/MapBuffs'
+import { playWindBoostPickup } from '../game/WindBoostSfx'
 
 export class GameScene extends Phaser.Scene {
   // Core systems
@@ -99,6 +101,12 @@ export class GameScene extends Phaser.Scene {
 
   private ambient!: AmbientMusic
   private seaLife!: SeaLifeAmbience
+  private mapBuffs!: MapBuffPickups
+  /** Elapsed seconds while wind-boost buff active; -1 = none. */
+  private windBoostElapsedSec = -1
+  private readonly WIND_BOOST_PEAK = 5
+  private readonly WIND_BOOST_FULL_SEC = 5
+  private readonly WIND_BOOST_FADE_SEC = 10
 
   // Display conversion for HUD text
   private readonly METERS_PER_UNIT = 2
@@ -177,6 +185,8 @@ export class GameScene extends Phaser.Scene {
     this.world = new World(this, this.routeMap)
     this.boat = new Boat(this)
     this.seaLife = new SeaLifeAmbience(this)
+    this.mapBuffs = new MapBuffPickups(this, this.routeMap)
+    this.windBoostElapsedSec = -1
 
     this.physState = {
       posX: sx,
@@ -201,6 +211,8 @@ export class GameScene extends Phaser.Scene {
     this.boat.targetSailAngle = this.boat.sailAngle
 
     this.wind.spawnInitialZones(w, h, sx, sy, this.currentHeading)
+
+    this.mapBuffs.bootstrap(this.physState.posX, this.physState.posY, w, h, this.world.mapZoom)
 
     // HUD layer
     this.hudGraphics = this.add.graphics()
@@ -533,6 +545,25 @@ export class GameScene extends Phaser.Scene {
       this.scale.width,
       this.scale.height
     )
+
+    this.mapBuffs.update(
+      dt,
+      this.physState.posX,
+      this.physState.posY,
+      this.scale.width,
+      this.scale.height,
+      this.world.mapZoom
+    )
+  }
+
+  private getWindBoostMagnitude(): number {
+    if (this.windBoostElapsedSec < 0) return 0
+    if (this.windBoostElapsedSec < this.WIND_BOOST_FULL_SEC) return this.WIND_BOOST_PEAK
+    const t = this.windBoostElapsedSec - this.WIND_BOOST_FULL_SEC
+    if (t >= this.WIND_BOOST_FADE_SEC) return 0
+    const u = t / this.WIND_BOOST_FADE_SEC
+    const s = u * u * (3 - 2 * u)
+    return this.WIND_BOOST_PEAK * (1 - s)
   }
 
   update(_time: number, delta: number): void {
@@ -579,10 +610,14 @@ export class GameScene extends Phaser.Scene {
     if (this.landStunRemainingSec <= 0) {
       this.boat.stepSailTowardTarget(dt)
     }
+    const windBoostMag = this.getWindBoostMagnitude()
     this.lastThrust = computeThrust(
       this.boat.sailAngle,
       this.currentWindDirection,
-      this.currentWindStrength
+      this.currentWindStrength,
+      windBoostMag,
+      this.physState.velX,
+      this.physState.velY
     )
     if (this.landStunRemainingSec > 0) {
       this.lastThrust = {
@@ -621,6 +656,25 @@ export class GameScene extends Phaser.Scene {
     )
     this.physState.velX += hit.dvx
     this.physState.velY += hit.dvy
+
+    if (this.raceLive && !this.gameOver) {
+      const collected = this.mapBuffs.tryCollectAt(
+        prevPos.x,
+        prevPos.y,
+        this.physState.posX,
+        this.physState.posY
+      )
+      if (collected === 'windBoost') {
+        this.windBoostElapsedSec = 0
+        playWindBoostPickup()
+        this.mapBuffs.triggerGust(this.currentWindDirection)
+      } else if (this.windBoostElapsedSec >= 0) {
+        this.windBoostElapsedSec += dt
+        if (this.windBoostElapsedSec >= this.WIND_BOOST_FULL_SEC + this.WIND_BOOST_FADE_SEC) {
+          this.windBoostElapsedSec = -1
+        }
+      }
+    }
 
     const gx = this.physState.velX + curX
     const gy = this.physState.velY + curY
@@ -677,6 +731,15 @@ export class GameScene extends Phaser.Scene {
       this.world.mapZoom,
       this.scale.width,
       this.scale.height
+    )
+
+    this.mapBuffs.update(
+      dt,
+      this.physState.posX,
+      this.physState.posY,
+      this.scale.width,
+      this.scale.height,
+      this.world.mapZoom
     )
 
     this.updateHUD()
