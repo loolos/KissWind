@@ -94,3 +94,15 @@ export function viewportHalfExtents(
     halfH: viewH / (2 * mapZoom) + pad,
   }
 }
+
+/**
+ * World half-extents as if the map were at the most zoomed-out step.
+ * Use for entities that should spawn/wrap in a band that does not shrink when the player zooms in.
+ */
+export function viewportHalfExtentsMaxZoomOut(
+  viewW: number,
+  viewH: number
+): { halfW: number; halfH: number } {
+  const minZoom = MAP_ZOOM_LEVELS[MAP_ZOOM_LEVELS.length - 1]
+  return viewportHalfExtents(viewW, viewH, minZoom)
+}

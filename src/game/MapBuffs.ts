@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { worldToScreen } from './camera'
-import { viewportHalfExtents } from './mapConfig'
+import { viewportHalfExtentsMaxZoomOut } from './mapConfig'
 import { isPointOnAnyLand } from './land'
 import type { FixedRouteMap } from './fixedMap'
 
@@ -17,7 +17,7 @@ interface PendingRespawn {
   kind: BuffKind
 }
 
-const TARGET_ON_MAP = 1
+const TARGET_ON_MAP = 4
 const PICKUP_RADIUS_WORLD = 18
 const LAND_MARGIN = 12
 const RESPAWN_SEC_MIN = 22
@@ -25,6 +25,39 @@ const RESPAWN_SEC_MAX = 48
 const START_FINISH_CLEAR = 52
 const GUST_DURATION_SEC = 0.85
 const GUST_LINE_COUNT = 16
+
+/** Unit lightning path (roughly 24 tall); scaled in screen space, no map zoom. */
+const BOLT_LOCAL: [number, number][] = [
+  [0, -11],
+  [3.5, -3],
+  [-1.2, -4.5],
+  [5.5, 6.5],
+  [-2.8, 5.2],
+  [1.2, 12],
+]
+
+/** Center bolt in its bbox and max radius so we can scale it to fit inside the circle stroke. */
+function boltFitMetrics(pts: [number, number][]): { cx: number; cy: number; maxR: number } {
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  for (const [x, y] of pts) {
+    minX = Math.min(minX, x)
+    maxX = Math.max(maxX, x)
+    minY = Math.min(minY, y)
+    maxY = Math.max(maxY, y)
+  }
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  let maxR = 0
+  for (const [x, y] of pts) {
+    maxR = Math.max(maxR, Math.hypot(x - cx, y - cy))
+  }
+  return { cx, cy, maxR }
+}
+
+const BOLT_FIT = boltFitMetrics(BOLT_LOCAL)
 
 function smoothstep(t: number): number {
   const x = Phaser.Math.Clamp(t, 0, 1)
@@ -51,9 +84,9 @@ export class MapBuffPickups {
     this.gustGfx.setDepth(19)
   }
 
-  bootstrap(boatX: number, boatY: number, viewW: number, viewH: number, mapZoom: number): void {
+  bootstrap(boatX: number, boatY: number, viewW: number, viewH: number, _mapZoom: number): void {
     while (this.pickups.length < TARGET_ON_MAP) {
-      if (!this.spawnOne(boatX, boatY, viewW, viewH, mapZoom)) break
+      if (!this.spawnOne(boatX, boatY, viewW, viewH)) break
     }
   }
 
@@ -97,14 +130,14 @@ export class MapBuffPickups {
     viewH: number,
     mapZoom: number
   ): void {
-    const { halfW, halfH } = viewportHalfExtents(viewW, viewH, mapZoom)
+    const { halfW, halfH } = viewportHalfExtentsMaxZoomOut(viewW, viewH)
 
     for (let i = this.pending.length - 1; i >= 0; i--) {
       this.pending[i].timeLeft -= dt
       if (this.pending[i].timeLeft <= 0) {
         const kind = this.pending[i].kind
         this.pending.splice(i, 1)
-        this.spawnOneOfKind(boatX, boatY, viewW, viewH, mapZoom, kind)
+        this.spawnOneOfKind(boatX, boatY, viewW, viewH, kind)
       }
     }
 
@@ -113,7 +146,7 @@ export class MapBuffPickups {
     }
 
     while (this.pickups.length < TARGET_ON_MAP) {
-      if (!this.spawnOne(boatX, boatY, viewW, viewH, mapZoom)) break
+      if (!this.spawnOne(boatX, boatY, viewW, viewH)) break
     }
 
     if (this.gustRemainingSec > 0) {
@@ -131,14 +164,8 @@ export class MapBuffPickups {
     return this.routeMap.lands
   }
 
-  private spawnOne(
-    boatX: number,
-    boatY: number,
-    viewW: number,
-    viewH: number,
-    mapZoom: number
-  ): boolean {
-    return this.spawnOneOfKind(boatX, boatY, viewW, viewH, mapZoom, 'windBoost')
+  private spawnOne(boatX: number, boatY: number, viewW: number, viewH: number): boolean {
+    return this.spawnOneOfKind(boatX, boatY, viewW, viewH, 'windBoost')
   }
 
   private spawnOneOfKind(
@@ -146,10 +173,9 @@ export class MapBuffPickups {
     boatY: number,
     viewW: number,
     viewH: number,
-    mapZoom: number,
     kind: BuffKind
   ): boolean {
-    const pos = this.randomOpenWorldPoint(boatX, boatY, viewW, viewH, mapZoom)
+    const pos = this.randomOpenWorldPoint(boatX, boatY, viewW, viewH)
     if (!pos) return false
     this.pickups.push({ worldX: pos.x, worldY: pos.y, kind })
     return true
@@ -159,10 +185,9 @@ export class MapBuffPickups {
     boatX: number,
     boatY: number,
     viewW: number,
-    viewH: number,
-    mapZoom: number
+    viewH: number
   ): { x: number; y: number } | null {
-    const { halfW, halfH } = viewportHalfExtents(viewW, viewH, mapZoom)
+    const { halfW, halfH } = viewportHalfExtentsMaxZoomOut(viewW, viewH)
     const lands = this.lands()
     const sx = this.routeMap.start.worldX
     const sy = this.routeMap.start.worldY
@@ -207,45 +232,44 @@ export class MapBuffPickups {
     g.clear()
     const t = this.scene.time.now / 1000
     const pulse = 0.92 + Math.sin(t * 5) * 0.08
+    const margin = 48
 
     for (const p of this.pickups) {
       if (p.kind !== 'windBoost') continue
       const { sx, sy } = worldToScreen(p.worldX, p.worldY, boatX, boatY, mapZoom, viewW, viewH)
-      if (sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40) continue
+      if (sx < -margin || sy < -margin || sx > viewW + margin || sy > viewH + margin) continue
 
-      const scale = Phaser.Math.Clamp(0.42 * mapZoom, 2.8, 14) * pulse
-      const rot = t * 0.35
-      const cos = Math.cos(rot)
-      const sin = Math.sin(rot)
+      const r = 18 * pulse
+      g.fillStyle(0x241838, 0.5)
+      g.fillCircle(sx, sy, r)
+      g.lineStyle(2.4, 0x6a58a0, 0.95)
+      g.strokeCircle(sx, sy, r)
 
-      const local: [number, number][] = [
-        [0, -11],
-        [3.5, -3],
-        [-1.2, -4.5],
-        [5.5, 6.5],
-        [-2.8, 5.2],
-        [1.2, 12],
-      ]
+      const inset = 5.5
+      const boltScale = Math.max(0.08, (r - inset) / BOLT_FIT.maxR)
+      const wOuter = Math.max(1.5, boltScale * 0.32)
+      const wInner = Math.max(1, boltScale * 0.2)
+      const { cx: bcx, cy: bcy } = BOLT_FIT
 
-      g.lineStyle(scale * 0.35, 0x1a1040, 0.95)
+      g.lineStyle(wOuter, 0x1a1040, 0.95)
       g.beginPath()
-      for (let i = 0; i < local.length; i++) {
-        const [lx, ly] = local[i]
-        const rx = lx * cos - ly * sin
-        const ry = lx * sin + ly * cos
-        if (i === 0) g.moveTo(sx + rx, sy + ry)
-        else g.lineTo(sx + rx, sy + ry)
+      for (let i = 0; i < BOLT_LOCAL.length; i++) {
+        const [lx, ly] = BOLT_LOCAL[i]
+        const px = sx + (lx - bcx) * boltScale
+        const py = sy + (ly - bcy) * boltScale
+        if (i === 0) g.moveTo(px, py)
+        else g.lineTo(px, py)
       }
       g.strokePath()
 
-      g.lineStyle(scale * 0.22, 0xfff6a8, 1)
+      g.lineStyle(wInner, 0xfff6a8, 1)
       g.beginPath()
-      for (let i = 0; i < local.length; i++) {
-        const [lx, ly] = local[i]
-        const rx = lx * cos - ly * sin
-        const ry = lx * sin + ly * cos
-        if (i === 0) g.moveTo(sx + rx, sy + ry)
-        else g.lineTo(sx + rx, sy + ry)
+      for (let i = 0; i < BOLT_LOCAL.length; i++) {
+        const [lx, ly] = BOLT_LOCAL[i]
+        const px = sx + (lx - bcx) * boltScale
+        const py = sy + (ly - bcy) * boltScale
+        if (i === 0) g.moveTo(px, py)
+        else g.lineTo(px, py)
       }
       g.strokePath()
     }
