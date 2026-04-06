@@ -29,6 +29,67 @@ export interface ThrustResult {
   multiplier: number
 }
 
+function computeWindBoostSign(
+  sailNx: number,
+  sailNy: number,
+  windOnNormal: number,
+  extraWindBoostMagnitude: number,
+  boostRefVelX?: number,
+  boostRefVelY?: number
+): number {
+  if (extraWindBoostMagnitude <= 1e-8) return 1
+  const projSign = (rx: number, ry: number): number | null => {
+    const d = rx * sailNx + ry * sailNy
+    if (Math.abs(d) > 1e-6) return Math.sign(d)
+    return null
+  }
+  const windFallback = Math.abs(windOnNormal) > 1e-5 ? Math.sign(windOnNormal) : 1
+  const fromVel =
+    boostRefVelX !== undefined &&
+    boostRefVelY !== undefined &&
+    boostRefVelX * boostRefVelX + boostRefVelY * boostRefVelY > 1e-8
+  if (fromVel) {
+    const sv = projSign(boostRefVelX!, boostRefVelY!)
+    return sv !== null ? sv : windFallback
+  }
+  return windFallback
+}
+
+/**
+ * Ambient wind vector (direction = where wind blows toward, magnitude = strength)
+ * plus boost along sail normal, matching the scalar combined on n̂ in `computeThrust`.
+ * Use for HUD wind arrow / readout so boost shifts displayed direction when it applies.
+ */
+export function effectiveWindVectorForHud(
+  sailAngle: number,
+  windDir: number,
+  windStrength: number,
+  extraWindBoostMagnitude: number,
+  boostRefVelX?: number,
+  boostRefVelY?: number
+): { x: number; y: number } {
+  const wx = Math.cos(windDir) * windStrength
+  const wy = Math.sin(windDir) * windStrength
+  if (extraWindBoostMagnitude <= 1e-8) return { x: wx, y: wy }
+  const sailNx = Math.cos(sailAngle + Math.PI / 2)
+  const sailNy = Math.sin(sailAngle + Math.PI / 2)
+  const windVx = Math.cos(windDir)
+  const windVy = Math.sin(windDir)
+  const windOnNormal = windVx * sailNx + windVy * sailNy
+  const boostSign = computeWindBoostSign(
+    sailNx,
+    sailNy,
+    windOnNormal,
+    extraWindBoostMagnitude,
+    boostRefVelX,
+    boostRefVelY
+  )
+  return {
+    x: wx + boostSign * extraWindBoostMagnitude * sailNx,
+    y: wy + boostSign * extraWindBoostMagnitude * sailNy,
+  }
+}
+
 /**
  * Compute sail force vector from wind and sail orientation.
  *
@@ -83,27 +144,14 @@ export function computeThrust(
     quality = 'gray'
   }
 
-  let boostSign = 1
-  if (extraWindBoostMagnitude > 1e-8) {
-    const projSign = (rx: number, ry: number): number | null => {
-      const d = rx * sailNx + ry * sailNy
-      if (Math.abs(d) > 1e-6) return Math.sign(d)
-      return null
-    }
-    const windFallback = Math.abs(windOnNormal) > 1e-5 ? Math.sign(windOnNormal) : 1
-
-    const fromVel =
-      boostRefVelX !== undefined &&
-      boostRefVelY !== undefined &&
-      boostRefVelX * boostRefVelX + boostRefVelY * boostRefVelY > 1e-8
-
-    if (fromVel) {
-      const sv = projSign(boostRefVelX!, boostRefVelY!)
-      boostSign = sv !== null ? sv : windFallback
-    } else {
-      boostSign = windFallback
-    }
-  }
+  const boostSign = computeWindBoostSign(
+    sailNx,
+    sailNy,
+    windOnNormal,
+    extraWindBoostMagnitude,
+    boostRefVelX,
+    boostRefVelY
+  )
 
   const forceScale =
     windOnNormal * windStrength * multiplier * 3 + boostSign * extraWindBoostMagnitude * multiplier * 3

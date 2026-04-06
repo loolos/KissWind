@@ -20,6 +20,7 @@ import {
   PhysicsState,
   ThrustResult,
   computeThrust,
+  effectiveWindVectorForHud,
   updatePhysics,
   normalizeAngle,
   OPTIMAL_ANGLE,
@@ -566,6 +567,21 @@ export class GameScene extends Phaser.Scene {
     return this.WIND_BOOST_PEAK * (1 - s)
   }
 
+  /** Direction + magnitude for HUD (ambient wind + boost along sail normal, same as thrust). */
+  private getHudEffectiveWind(): { dir: number; strength: number } {
+    const v = effectiveWindVectorForHud(
+      this.boat.sailAngle,
+      this.currentWindDirection,
+      this.currentWindStrength,
+      this.getWindBoostMagnitude(),
+      this.physState.velX,
+      this.physState.velY
+    )
+    const strength = Math.hypot(v.x, v.y)
+    const dir = strength > 1e-6 ? Math.atan2(v.y, v.x) : this.currentWindDirection
+    return { dir, strength }
+  }
+
   update(_time: number, delta: number): void {
     const dt = Math.min(delta / 1000, 0.05)
 
@@ -778,16 +794,17 @@ export class GameScene extends Phaser.Scene {
     this.hudGraphics.fillStyle(0x000022, panelAlpha)
     this.hudGraphics.fillRoundedRect(w - 186, 8, 178, 42, 8)
 
+    const hudWind = this.getHudEffectiveWind()
     this.drawWindCompass(
       w / 2,
       44,
-      this.currentWindDirection,
+      hudWind.dir,
       this.currentHeading,
       this.waterCurrent.direction,
       this.waterCurrent.speed
     )
     this.drawFinishWorldFlag(w, h)
-    this.windText.setText(`WIND ${this.currentWindStrength.toFixed(2)}`)
+    this.windText.setText(`WIND ${hudWind.strength.toFixed(2)}`)
 
     const speedFracHud = Math.min(1, this.currentSpeed / this.HUD_SPEED_BAR_REF)
     const digColor = speedFracHud > 0.7 ? '#66ffaa' : speedFracHud > 0.4 ? '#88d4ff' : '#c8e8ff'
@@ -810,7 +827,7 @@ export class GameScene extends Phaser.Scene {
     this.hudGraphics.fillRect(0, barY, w * progress, barH + 2)
 
     this.drawMiniMap()
-    this.drawSailHint(w / 2, sailCy)
+    this.drawSailHint(w / 2, sailCy, hudWind.dir)
   }
 
   private getHudLayout(): { sailCy: number; sailScale: number } {
@@ -1201,10 +1218,15 @@ export class GameScene extends Phaser.Scene {
     g.fillCircle(cx, cy, 3)
   }
 
-  private drawSailHint(cx: number, cy: number): void {
+  /**
+   * @param hudWindDir — combined wind direction for the white rim marker (matches top compass).
+   *    Green/yellow arcs stay tied to ambient wind + fixed optimal geometry.
+   */
+  private drawSailHint(cx: number, cy: number, hudWindDir: number): void {
     const g = this.hudGraphics
     const { sailScale: scale } = this.getHudLayout()
     const r = 28 * scale
+    const ambientWindDir = this.currentWindDirection
 
     g.fillStyle(0x001133, 0.6)
     g.fillRoundedRect(
@@ -1230,16 +1252,14 @@ export class GameScene extends Phaser.Scene {
       g.fillPath()
     }
 
-    const windDir = this.currentWindDirection
-
     g.lineStyle(6 * scale, 0xffdd44, 0.4)
     g.beginPath()
     g.arc(
       cx,
       cy,
       r,
-      windDir + OPTIMAL_ANGLE - YELLOW_ZONE_OUTER_HALF_WIDTH,
-      windDir + OPTIMAL_ANGLE + YELLOW_ZONE_OUTER_HALF_WIDTH
+      ambientWindDir + OPTIMAL_ANGLE - YELLOW_ZONE_OUTER_HALF_WIDTH,
+      ambientWindDir + OPTIMAL_ANGLE + YELLOW_ZONE_OUTER_HALF_WIDTH
     )
     g.strokePath()
 
@@ -1249,8 +1269,8 @@ export class GameScene extends Phaser.Scene {
       cx,
       cy,
       r,
-      windDir + OPTIMAL_ANGLE - GREEN_ZONE_HALF_WIDTH,
-      windDir + OPTIMAL_ANGLE + GREEN_ZONE_HALF_WIDTH
+      ambientWindDir + OPTIMAL_ANGLE - GREEN_ZONE_HALF_WIDTH,
+      ambientWindDir + OPTIMAL_ANGLE + GREEN_ZONE_HALF_WIDTH
     )
     g.strokePath()
 
@@ -1298,8 +1318,8 @@ export class GameScene extends Phaser.Scene {
       g.strokePath()
     }
 
-    const windX = cx + Math.cos(windDir) * (r - 8 * scale)
-    const windY = cy + Math.sin(windDir) * (r - 8 * scale)
+    const windX = cx + Math.cos(hudWindDir) * (r - 8 * scale)
+    const windY = cy + Math.sin(hudWindDir) * (r - 8 * scale)
     g.fillStyle(0xffffff, 0.8)
     g.fillCircle(windX, windY, 3 * scale)
 

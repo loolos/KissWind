@@ -97,30 +97,30 @@ function randomLandMass(id: string): LandMass {
   const cx = randRange(RAND_WORLD.xMin + 90, RAND_WORLD.xMax - 90)
   const cy = randRange(RAND_WORLD.yMin + 90, RAND_WORLD.yMax - 90)
   const kindRoll = Math.random()
-  if (kindRoll < 0.34) {
+  if (kindRoll < 0.22) {
     return {
       id,
       kind: 'circle',
       worldX: cx,
       worldY: cy,
-      radius: randRange(3.2, 8.2),
+      radius: randRange(4.8, 12),
     }
   }
-  if (kindRoll < 0.68) {
+  if (kindRoll < 0.44) {
     return {
       id,
       kind: 'rect',
       worldX: cx,
       worldY: cy,
-      width: randRange(7.5, 16),
-      height: randRange(5.2, 12),
+      width: randRange(11, 24),
+      height: randRange(7.5, 17),
       rotation: randRange(-Math.PI, Math.PI),
     }
   }
   return {
     id,
     kind: 'polygon',
-    points: buildIrregularPolygon(cx, cy, randRange(3.6, 8.5), randInt(5, 8)),
+    points: buildIrregularPolygon(cx, cy, randRange(5.5, 13), randInt(9, 15)),
   }
 }
 
@@ -129,10 +129,10 @@ function generateRandomLands(
   finish: { worldX: number; worldY: number; radius: number }
 ): LandMass[] {
   const lands: LandMass[] = []
-  const targetCount = randInt(6, 9)
+  const targetCount = randInt(9, 13)
   const startClearance = 10
   const finishClearance = finish.radius + 8
-  const overlapGap = 2.4
+  const overlapGap = 2.0
   let guard = 0
   while (lands.length < targetCount && guard < 1500) {
     guard++
